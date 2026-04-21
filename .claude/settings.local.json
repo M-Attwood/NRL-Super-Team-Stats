@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.nrlsupercoachstats.com)",
+      "Bash(python -c \":*)",
+      "Bash(pip install matplotlib seaborn)",
+      "Bash(python visualise.py)"
+    ]
+  }
+}

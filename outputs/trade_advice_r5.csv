@@ -1,0 +1,27 @@
+player_name,team,positions,price,predicted_points,is_starter,in_ideal_team,status
+"Grant, Harry",MEL,HOK,664200.0,78.17869567871094,True,False,consider_dropping
+"May, Terrell",WST,FRF,766500.0,69.96372985839844,True,False,consider_dropping
+"Ford, Jackson",NZL,FRF,722100.0,91.25755310058594,True,False,consider_dropping
+"Young, Hudson",CBR,2RF,741800.0,81.37861633300781,True,False,consider_dropping
+"Carrigan, Patrick",BRO,2RF|FRF,654200.0,70.540283203125,True,True,keep
+"Chan, Joe",MEL,2RF,518200.0,80.50308227539062,True,False,consider_dropping
+"Cleary, Nathan",PTH,HFB,834900.0,86.95738983154297,True,False,consider_dropping
+"Munster, Cameron",MEL,5/8,624800.0,57.494239807128906,True,False,consider_dropping
+"Farnworth, Herbie",DOL,CTW,791700.0,77.95745849609375,True,False,consider_dropping
+"Leo, Moses",MEL,CTW,317500.0,46.36238098144531,False,False,consider_dropping
+"Faeamani, Sialetili",GCT,CTW,274800.0,39.6671028137207,True,True,keep
+"Tu, Setu",STG,CTW,264600.0,45.82026290893555,False,False,consider_dropping
+"Walsh, Reece",BRO,FLB,790100.0,75.33311462402344,True,False,consider_dropping
+"Martin, Noah",CBR,2RF,431500.0,77.03228759765625,True,True,keep
+"Williams, Jack",PAR,2RF|FRF,585000.0,59.04908752441406,True,False,consider_dropping
+"Black, Coby",CBR,HFB,201400.0,6.275795936584473,False,False,consider_dropping
+"Wakeham, Brandon",MNL,5/8|HFB,216800.0,17.116928100585938,True,True,keep
+"Graham-Taufa, Moala",STH,CTW,352000.0,26.42015838623047,False,False,consider_dropping
+"Fineanganofo, John",DOL,5/8|HOK,201400.0,6.076885223388672,False,False,consider_dropping
+"Funa-Iuta, Jezaiah",PAR,2RF,201400.0,4.4145355224609375,False,False,consider_dropping
+"Going, Kalani",PTH,2RF|HOK,201400.0,15.016342163085938,False,False,consider_dropping
+"Foley, Reece",SYD,5/8|2RF,201400.0,5.314208030700684,False,False,consider_dropping
+"Harrison, Zane",GCT,HFB,201400.0,6.275795936584473,False,False,consider_dropping
+"Nawaqanitawase, Mark",SYD,CTW,675600.0,69.94021606445312,False,False,consider_dropping
+"Taumoepeau, Jensen",GCT,CTW,201400.0,5.7930097579956055,False,False,consider_dropping
+"Pasikala, Motu",NZL,FLB|CTW,201400.0,4.102110385894775,False,False,consider_dropping

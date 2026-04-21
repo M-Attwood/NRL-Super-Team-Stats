@@ -1,0 +1,13 @@
+round,out,out_team,out_price,in,in_team,in_price,net_value,salary_delta,is_bye_loop,bye_round,is_tradeback
+11,"Walsh, Reece",BRO,835600.0,"Kiraz, Jacob",BUL,746700.0,75.44420623779297,-88900.0,True,12.0,
+13,"Kiraz, Jacob",BUL,746700.0,"Walsh, Reece",BRO,835600.0,0.0,88900.0,,,True
+14,"Munster, Cameron",MEL,682200.0,"Faasuamaleaui, Tino",GCT,687600.0,69.01136016845703,5400.0,True,15.0,
+15,"Couchman, Toby",STG,588300.0,"Duncan, Tallis",STH,595700.0,63.04593276977539,7400.0,True,15.0,
+16,"Faasuamaleaui, Tino",GCT,687600.0,"Munster, Cameron",MEL,682200.0,0.0,-5400.0,,,True
+16,"Duncan, Tallis",STH,595700.0,"Couchman, Toby",STG,588300.0,0.0,-7400.0,,,True
+17,"Young, Hudson",CBR,754000.0,"Lucas, Dylan",NEW,744700.0,76.7055435180664,-9300.0,True,18.0,
+18,"Hughes, Jahrome",MEL,631900.0,"Olakauatu, Haumole",MNL,650000.0,66.36328125,18100.0,True,18.0,
+19,"Lucas, Dylan",NEW,744700.0,"Young, Hudson",CBR,754000.0,0.0,9300.0,,,True
+19,"Olakauatu, Haumole",MNL,650000.0,"Hughes, Jahrome",MEL,631900.0,0.0,-18100.0,,,True
+20,"Hughes, Jahrome",MEL,631900.0,"Fonua-Blake, Addin",SHA,638900.0,97.2707748413086,7000.0,,,
+23,"Munster, Cameron",MEL,682200.0,"Fogarty, Jamal",MNL,667200.0,82.71955108642578,-15000.0,,,
