@@ -187,7 +187,7 @@ def scrape_main_stats(year: int = 2026, rows_per_page: int = 200) -> pd.DataFram
 
         try:
             data = r.json()
-        except Exception:
+        except ValueError:
             log.error("Response is not JSON on page %d. First 500 chars:\n%s",
                       page, r.text[:500])
             break
@@ -273,7 +273,8 @@ def scrape_round_data(year: int = 2026, round_num: int = None) -> pd.DataFrame:
             try:
                 r = _get_retry(session, STATS_URL, params)
                 data = r.json()
-            except Exception:
+            except (requests.RequestException, ValueError) as e:
+                log.debug("round %s page %d fetch/parse failed: %s", rd, page, e)
                 break
 
             rows = data.get("rows", [])

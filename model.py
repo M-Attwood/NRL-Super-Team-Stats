@@ -94,8 +94,8 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
                 df[col].astype(str).str.replace(r"[^\d.\-]", "", regex=True).replace("", np.nan),
                 errors="coerce"
             )
-        except Exception:
-            pass
+        except (ValueError, TypeError, AttributeError) as e:
+            log.debug("skipping numeric coercion for column %s: %s", col, e)
 
     # Fill NaN with position-group median
     primary_pos = df["positions"].str.split("|").str[0].fillna("UNK")
