@@ -36,110 +36,70 @@ log = logging.getLogger(__name__)
 #  USER INPUT — UPDATE THESE EACH ROUND
 # ═══════════════════════════════════════════════════════════════════════════════
 
-CURRENT_ROUND = 6
+CURRENT_ROUND = 8
 
 # ── YOUR CURRENT 26-PLAYER SQUAD ──
 MY_SQUAD = [
+    # Starting 13
     "Harry Grant",
-    "Terrell May",
     "Jackson Ford",
-    "Hudson Young",
-    "Patrick Carrigan",
-    "Joe Chan",
+    "Jack Williams",
+    "Siua Wong",
+    "Noah Martin",
     "Nathan Cleary",
     "Cameron Munster",
-    "Herbie Farnworth",
-    "Moses Leo",
-    "Sialetili Faeamani",
-    "Setu Tu",
-    "Reece Walsh",
-    "Noah Martin",
-    "Jack Williams",
-    "Cooper Clarke",
-    "Brandon Wakeham",
+    "Thomas Jenkins",
     "Latrell Mitchell",
-    "John Fineanganofo",
-    "Jezaiah Funa-Iuta",
+    "Herbie Farnworth",
+    "Tom Chester",
+    "Dylan Edwards",
+    "Setu Tu",
+    # Bench / Reserves 13
     "Kalani Going",
+    "John Fineanganofo",
+    "Arama Hau",
+    "Cooper Clarke",
+    "Hudson Young",
+    "Jezaiah Funa-Iuta",
     "Reece Foley",
     "Zane Harrison",
+    "Brandon Wakeham",
     "Dominic Young",
-    "Jensen Taumoepeau",
+    "Sialetili Faeamani",
+    "Moses Leo",
     "Motu Pasikala",
 ]
 
 # ── CONFIRMED STARTERS FOR THIS ROUND ──
 ROUND_STARTERS = [
-    # Bulldogs
-    "Connor Tracey",
-    "Jacob Kiraz",
-    "Enari Tuala",
-    "Bronson Xerri",
-    "Marcelo Montoya",
-    "Matt Burton",
-    "Lachlan Galvin",
-    "Max King",
-    "Bailey Hayward",
-    "Samuel Hughes",
-    "Viliame Kikau",
-    "Jacob Preston",
-    "Jaeman Salmon",
-    # Panthers
-    "Dylan Edwards",
-    "Thomas Jenkins",
-    "Paul Alamoti",
-    "Casey McLean",
-    "Brian To'o",
-    "Blaize Talagi",
-    "Nathan Cleary",
-    "Moses Leota",
-    "Mitch Kenny",
-    "Lindsay Smith",
-    "Isaiah Papali'i",
-    "Liam Martin",
-    "Isaah Yeo",
-    # Dragons
-    "Tyrell Sloan",
-    "Christian Tuipulotu",
-    "Moses Suli",
-    "Valentine Holmes",
-    "Setu Tu",
-    "Daniel Atkinson",
-    "Kyle Flanagan",
-    "Emre Guler",
-    "Damien Cook",
-    "Toby Couchman",
-    "Luciano Leilua",
-    "Jaydn Su'A",
-    "Hamish Stewart",
-    # Sea Eagles
-    "Tom Trbojevic",
-    "Jason Saab",
-    "Tolutau Koula",
-    "Reuben Garrick",
-    "Lehi Hopoate",
-    "Luke Brooks",
-    "Jamal Fogarty",
-    "Taniela Paseka",
-    "Brandon Wakeham",
-    "Kobe Hetherington",
-    "Haumole Olakau'atu",
-    "Ben Trbojevic",
-    "Jake Trbojevic",
-    # Broncos
-    "Jesse Arthars",
-    "Josiah Karapani",
-    "Kotoni Staggs",
-    "Gehamat Shibasaki",
-    "Deine Mariner",
-    "Ezra Mam",
-    "Adam Reynolds",
-    "Corey Jensen",
-    "Cory Paix",
-    "Payne Haas",
-    "Brendan Piakura",
-    "Jordan Riki",
-    "Patrick Carrigan",
+    # Wests Tigers
+    "Jahream Bula",
+    "Sunia Turuva",
+    "Taylan May",
+    "Starford To'a",
+    "Luke Laulilii",
+    "Jarome Luai",
+    "Adam Doueihi",
+    "Terrell May",
+    "Apisai Koroisau",
+    "Fonua Pole",
+    "Samuela Fainu",
+    "Kai Pearce-Paul",
+    "Alex Twal",
+    # Raiders
+    "Kaeo Weekes",
+    "Sebastian Kris",
+    "Matthew Timoko",
+    "Savelio Tamale",
+    "Jed Stuart",
+    "Ethan Strange",
+    "Ethan Sanders",
+    "Ata Mariota",
+    "Tom Starling",
+    "Joseph Tapine",
+    "Zac Hosking",
+    "Noah Martin",
+    "Corey Horsburgh",
     # Cowboys
     "Scott Drinkwater",
     "Braidon Burns",
@@ -152,50 +112,64 @@ ROUND_STARTERS = [
     "Reed Mahoney",
     "Jason Taumalolo",
     "Heilum Luki",
-    "Kai O'Donnell",
+    "Jeremiah Nanai",
     "Reuben Cotter",
-    # Rabbitohs
-    "Jye Gray",
-    "Alex Johnston",
-    "Latrell Mitchell",
-    "Jack Wighton",
-    "Campbell Graham",
-    "Cody Walker",
-    "Jamie Humphreys",
-    "Tevita Tatola",
-    "Brandon Smith",
-    "Keaon Koloamatangi",
-    "David Fifita",
-    "Tallis Duncan",
-    "Cameron Murray",
-    # Raiders
-    "Kaeo Weekes",
-    "Savelio Tamale",
-    "Simi Sasagi",
-    "Sebastian Kris",
-    "Jed Stuart",
-    "Ethan Strange",
-    "Ethan Sanders",
-    "Josh Papalii",
-    "Tom Starling",
-    "Joseph Tapine",
-    "Hudson Young",
-    "Noah Martin",
-    "Corey Horsburgh",
     # Sharks
     "William Kennedy",
-    "Sione Katoa",
     "Mawene Hiroti",
-    "KL Iro",
+    "Siosifa Talakai",
+    "Kayal Iro",
     "Samuel Stonestreet",
     "Braydon Trindall",
-    "Nicholas Hynes",
+    "Nicho Hynes",
     "Addin Fonua-Blake",
     "Blayke Brailey",
     "Toby Rudolf",
     "Billy Burns",
     "Teig Wilton",
     "Jesse Colquhoun",
+    # Broncos
+    "Jesse Arthars",
+    "Josiah Karapani",
+    "Kotoni Staggs",
+    "Gehamat Shibasaki",
+    "Deine Mariner",
+    "Ezra Mam",
+    "Adam Reynolds",
+    "Ben Talty",
+    "Cory Paix",
+    "Jack Gosiewski",
+    "Brendan Piakura",
+    "Jordan Riki",
+    "Xavier Willison",
+    # Bulldogs
+    "Connor Tracey",
+    "Jonathan Sua",
+    "Bronson Xerri",
+    "Stephen Crichton",
+    "Marcelo Montoya",
+    "Matt Burton",
+    "Lachlan Galvin",
+    "Samuel Hughes",
+    "Bailey Hayward",
+    "Leo Thompson",
+    "Viliame Kikau",
+    "Jacob Preston",
+    "Jaeman Salmon",
+    # Dragons
+    "Tyrell Sloan",
+    "Setu Tu",
+    "Moses Suli",
+    "Valentine Holmes",
+    "Mathew Feagai",
+    "Daniel Atkinson",
+    "Kade Reed",
+    "Emre Guler",
+    "Damien Cook",
+    "Toby Couchman",
+    "Luciano Leilua",
+    "Ryan Couchman",
+    "Hamish Stewart",
     # Roosters
     "James Tedesco",
     "Daniel Tupou",
@@ -210,12 +184,40 @@ ROUND_STARTERS = [
     "Angus Crichton",
     "Siua Wong",
     "Victor Radley",
+    # Warriors
+    "Taine Tuaupiki",
+    "Dallin Watene-Zelezniak",
+    "Roger Tuivasa-Sheck",
+    "Ali Leiataua",
+    "Alofiana Khan-Pereira",
+    "Chanel Harris-Tavita",
+    "Tanah Boyd",
+    "James Fisher-Harris",
+    "Wayde Egan",
+    "Jackson Ford",
+    "Leka Halasima",
+    "Kurt Capewell",
+    "Erin Clark",
+    # Dolphins
+    "Hamiso Tabuai-Fidow",
+    "Jamayne Isaako",
+    "Jake Averillo",
+    "Herbie Farnworth",
+    "Selwyn Cobbo",
+    "Bradley Schneider",
+    "Isaiya Katoa",
+    "Tom Gilbert",
+    "Max Plath",
+    "Francis Molo",
+    "Connelly Lemuelu",
+    "Kulikefu Finefeuiaki",
+    "Morgan Knowles",
     # Storm
     "Sualauvi Faalogo",
     "Will Warbrick",
     "Jack Howarth",
     "Nick Meaney",
-    "Moses Leo",
+    "Manaia Waitere",
     "Cameron Munster",
     "Jahrome Hughes",
     "Stefano Utoikamanu",
@@ -224,76 +226,77 @@ ROUND_STARTERS = [
     "Joe Chan",
     "Cooper Clarke",
     "Trent Loiero",
-    # Warriors
-    "Taine Tuaupiki",
-    "Dallin Watene-Zelezniak",
-    "Charnze Nicoll-Klokstad",
-    "Adam Pompey",
-    "Roger Tuivasa-Sheck",
-    "Chanel Harris-Tavita",
-    "Tanah Boyd",
-    "James Fisher-Harris",
-    "Wayde Egan",
-    "Jackson Ford",
-    "Leka Halasima",
-    "Jacob Laban",
-    "Erin Clark",
-    # Eels
-    "Joash Papalii",
-    "Araz Nanva",
-    "Will Penisini",
-    "Brian Kelly",
-    "Josh Addo-Carr",
-    "Ronald Volkman",
-    "Mitchell Moses",
-    "Jack Williams",
-    "Ryley Smith",
-    "Junior Paulo",
-    "Kelma Tuilagi",
-    "Kitione Kautoga",
-    "Dylan Walker",
-    # Titans
-    "Keano Kini",
-    "Sialetili Faeamani",
-    "Jojo Fifita",
-    "AJ Brimson",
-    "Phillip Sami",
-    "Lachlan Ilias",
-    "Jayden Campbell",
-    "Klese Haas",
-    "Sam Verrills",
-    "Tino Fa'asuamaleaui",
-    "Arama Hau",
-    "Beau Fermor",
-    "Chris Randall",
-    # Wests Tigers
-    "Jahream Bula",
-    "Faaletino Tavana",
-    "Sunia Turuva",
-    "Heamasi Makasini",
-    "Jeral Skelton",
-    "Jock Madden",
-    "Adam Doueihi",
-    "Terrell May",
-    "Apisai Koroisau",
-    "Fonua Pole",
-    "Samuela Fainu",
-    "Kai Pearce-Paul",
-    "Alex Twal",
+    # Rabbitohs
+    "Matthew Dufty",
+    "Alex Johnston",
+    "Latrell Mitchell",
+    "Jack Wighton",
+    "Campbell Graham",
+    "Cody Walker",
+    "Jamie Humphreys",
+    "Tevita Tatola",
+    "Bronson Garlick",
+    "Sean Keppie",
+    "Brandon Smith",
+    "Tallis Duncan",
+    "Cameron Murray",
     # Knights
-    "Fletcher Hunt",
+    "Fletcher Sharpe",
     "Dominic Young",
     "Dane Gagai",
-    "Wilson De Courcey",
-    "Greg Marzhew",
-    "Fletcher Sharpe",
+    "Fletcher Hunt",
+    "James Schiller",
     "Sandon Smith",
+    "Dylan Brown",
     "Jacob Saifiti",
     "Phoenix Crossland",
     "Trey Mooney",
-    "Dylan Lucas",
+    "Francis Manuleleua",
     "Jermaine McEwen",
     "Mat Croker",
+    # Panthers
+    "Dylan Edwards",
+    "Thomas Jenkins",
+    "Paul Alamoti",
+    "Casey McLean",
+    "Brian To'o",
+    "Blaize Talagi",
+    "Nathan Cleary",
+    "Moses Leota",
+    "Freddy Lussick",
+    "Lindsay Smith",
+    "Isaiah Papali'i",
+    "Luke Garner",
+    "Isaah Yeo",
+    # Sea Eagles
+    "Tolutau Koula",
+    "Jason Saab",
+    "Clayton Faulalo",
+    "Reuben Garrick",
+    "Lehi Hopoate",
+    "Luke Brooks",
+    "Jamal Fogarty",
+    "Taniela Paseka",
+    "Brandon Wakeham",
+    "Kobe Hetherington",
+    "Haumole Olakau'atu",
+    "Ben Trbojevic",
+    "Jake Trbojevic",
+    # Eels
+    "Joash Papalii",
+    "Brian Kelly",
+    "Will Penisini",
+    "Sean Russell",
+    "Josh Addo-Carr",
+    "Ronald Volkman",
+    "Mitchell Moses",
+    "Luca Moretti",
+    "Ryley Smith",
+    "Junior Paulo",
+    "Charlie Guymer",
+    "Jack Williams",
+    "Dylan Walker",
+    # Titans on bye for Round 8
 ]
 
 
@@ -366,8 +369,13 @@ def load_player_pool(round_num: int, year: int = 2026,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _normalise_name(name: str) -> str:
-    """Normalise a name for matching: lowercase, strip whitespace."""
-    return name.strip().lower()
+    """Normalise a name for matching: lowercase, strip whitespace and
+    apostrophe variants (the scraper drops apostrophes, so 'To'o' and 'Too'
+    must compare equal; same for curly ', ` and straight ')."""
+    out = name.strip().lower()
+    for ch in ("'", "’", "ʻ", "`"):
+        out = out.replace(ch, "")
+    return out
 
 
 def _flip_name(name: str) -> str:
@@ -572,12 +580,15 @@ def filter_to_starters(df_pred: pd.DataFrame,
     return df_starters
 
 
-def build_ideal_team(df_starters: pd.DataFrame, round_num: int) -> dict:
+def build_ideal_team(df_starters: pd.DataFrame, round_num: int,
+                     salary_cap: int | None = None) -> dict:
     """Build the best possible team from confirmed starters only."""
     from optimizer import select_team
-    log.info("Building ideal team from %d confirmed starters ...",
-             len(df_starters))
-    result = select_team(df_starters, round_number=round_num)
+    log.info("Building ideal team from %d confirmed starters (cap $%s) ...",
+             len(df_starters),
+             f"{salary_cap:,}" if salary_cap else "default")
+    result = select_team(df_starters, round_number=round_num,
+                         salary_cap=salary_cap)
     if result.get("solver_status") != "Optimal":
         log.warning("Ideal team solver status: %s", result.get("solver_status"))
     return result
@@ -645,7 +656,8 @@ def recommend_trades(current_squad: list[dict],
                      confirmed_starters: set[str],
                      pool: pd.DataFrame,
                      max_trades: int = 2,
-                     round_num: int = 0) -> list[dict]:
+                     round_num: int = 0,
+                     salary_cap: int | None = None) -> list[dict]:
     """
     Find the best trades to move current squad toward ideal.
 
@@ -663,6 +675,8 @@ def recommend_trades(current_squad: list[dict],
     """
     from optimizer import SALARY_CAP, _eligible_positions
     from planner import validate_position_quotas
+
+    cap = salary_cap if salary_cap is not None else SALARY_CAP
 
     non_starters = comparison["non_starters"]
     to_drop = comparison["players_to_drop"]
@@ -737,7 +751,7 @@ def recommend_trades(current_squad: list[dict],
 
             # Salary cap check
             new_salary = current_salary - out_price + in_price
-            if new_salary > SALARY_CAP:
+            if new_salary > cap:
                 continue
 
             # Position compatibility: must share at least one position
@@ -811,8 +825,12 @@ def _print_team_group(label: str, players: list[dict]):
 def print_report(current_squad: list[dict], ideal_squad: list[dict],
                  comparison: dict, trades: list[dict],
                  confirmed_starters: set[str], round_num: int,
-                 ideal_result: dict = None):
+                 ideal_result: dict = None,
+                 salary_cap: int | None = None):
     """Print the full trade advisor report."""
+
+    from optimizer import SALARY_CAP as DEFAULT_CAP
+    cap = salary_cap if salary_cap is not None else DEFAULT_CAP
 
     current_salary = sum(_get_price(p) for p in current_squad)
     ideal_salary = sum(_get_price(p) for p in ideal_squad)
@@ -823,9 +841,14 @@ def print_report(current_squad: list[dict], ideal_squad: list[dict],
     print(f"  TRADE ADVISOR -- Round {round_num}")
     print("=" * 70)
 
+    if cap > DEFAULT_CAP:
+        print(f"\n  Effective cap: ${cap:,} "
+              f"(default ${DEFAULT_CAP:,} + ${cap - DEFAULT_CAP:,} "
+              f"price-rise allowance)")
+
     # Your squad summary
     print(f"\n  YOUR SQUAD ({len(current_squad)} players):")
-    print(f"    Salary: ${current_salary:,.0f} / $11,950,000")
+    print(f"    Salary: ${current_salary:,.0f} / ${cap:,}")
     print(f"    Confirmed starters: {n_starters}/{len(current_squad)}")
     print(f"    Non-starters (will score 0): "
           f"{len(current_squad) - n_starters}/{len(current_squad)}")
@@ -833,7 +856,7 @@ def print_report(current_squad: list[dict], ideal_squad: list[dict],
 
     # Ideal team summary
     print(f"\n  IDEAL TEAM (from confirmed starters only):")
-    print(f"    Salary: ${ideal_salary:,.0f} / $11,950,000")
+    print(f"    Salary: ${ideal_salary:,.0f} / ${cap:,}")
     print(f"    Est. scoring total: {comparison['ideal_scoring_total']:.0f} pts")
 
     # Full ideal team breakdown (proves all constraints are followed)
@@ -943,7 +966,7 @@ def print_report(current_squad: list[dict], ideal_squad: list[dict],
             in_pred = float(p_in.get("predicted_points", 0) or 0)
 
             cap_delta = t["salary_delta"]
-            cap_remaining = 11_950_000 - t["new_salary"]
+            cap_remaining = cap - t["new_salary"]
             if cap_delta < 0:
                 cap_str = (f"frees ${abs(cap_delta)/1000:.0f}K  "
                            f"(${cap_remaining/1_000_000:.2f}M remaining)")
@@ -966,11 +989,11 @@ def print_report(current_squad: list[dict], ideal_squad: list[dict],
         final_salary = current_salary
         for t in trades:
             final_salary += t["salary_delta"]
-        cap_left = 11_950_000 - final_salary
+        cap_left = cap - final_salary
 
         new_overlap = n_overlap + sum(1 for t in trades if t["in_ideal"])
         print(f"\n  AFTER TRADES:")
-        print(f"    Salary used: ${final_salary:,.0f} / $11,950,000"
+        print(f"    Salary used: ${final_salary:,.0f} / ${cap:,}"
               f"  (${cap_left:,.0f} remaining)")
         print(f"    Overlap with ideal: {new_overlap}/{len(current_squad)}"
               f" (was {n_overlap})")
@@ -1287,9 +1310,28 @@ def run_advisor(round_num: int = None, no_scrape: bool = False,
     # Step 3: Build player dicts for current squad
     current_squad = build_squad_dicts(squad_names, df_pred)
 
+    # Step 3b: Compute effective salary cap.
+    # Supercoach prices move on a 3-game rolling average, so mid-season a
+    # squad's current value can drift above the starting cap. The cap that
+    # actually constrains trades is max(starting_cap, current_team_value):
+    # you can't spend money you don't have, but price rises you've earned
+    # shouldn't retroactively push you offside.
+    from optimizer import SALARY_CAP as DEFAULT_CAP
+    current_team_value = sum(_get_price(p) for p in current_squad)
+    effective_cap = max(DEFAULT_CAP, int(current_team_value))
+    if effective_cap > DEFAULT_CAP:
+        log.info("Team value $%s exceeds default cap $%s -- using "
+                 "effective cap $%s (price-rise allowance)",
+                 f"{int(current_team_value):,}", f"{DEFAULT_CAP:,}",
+                 f"{effective_cap:,}")
+    else:
+        log.info("Team value $%s within default cap $%s",
+                 f"{int(current_team_value):,}", f"{DEFAULT_CAP:,}")
+
     # Step 4: Filter pool to confirmed starters and build ideal team
     df_starters = filter_to_starters(df_pred, confirmed_starters)
-    ideal_result = build_ideal_team(df_starters, round_num)
+    ideal_result = build_ideal_team(df_starters, round_num,
+                                    salary_cap=effective_cap)
     ideal_squad = flatten_team_result(ideal_result, df_pred)
 
     # Step 5: Compare squads
@@ -1304,11 +1346,13 @@ def run_advisor(round_num: int = None, no_scrape: bool = False,
         pool=df_pred,
         max_trades=max_trades,
         round_num=round_num,
+        salary_cap=effective_cap,
     )
 
     # Step 7: Output
     print_report(current_squad, ideal_squad, comparison, trades,
-                 confirmed_starters, round_num, ideal_result=ideal_result)
+                 confirmed_starters, round_num, ideal_result=ideal_result,
+                 salary_cap=effective_cap)
     export_report(current_squad, ideal_squad, comparison, trades,
                   confirmed_starters, round_num)
 

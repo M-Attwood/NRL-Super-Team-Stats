@@ -188,7 +188,8 @@ def _eligible_positions(positions_str: str) -> list[str]:
 
 # ── Core LP Solver ────────────────────────────────────────────────────────────
 
-def select_team(df: pd.DataFrame, round_number: int = 1) -> dict:
+def select_team(df: pd.DataFrame, round_number: int = 1,
+                salary_cap: int | None = None) -> dict:
     """
     Run the PuLP linear program and return the selected squad.
 
@@ -291,10 +292,11 @@ def select_team(df: pd.DataFrame, round_number: int = 1) -> dict:
     prob += pulp.lpSum(x[i] for i in players) == SQUAD_SIZE
 
     # 2. Salary cap
+    cap = salary_cap if salary_cap is not None else SALARY_CAP
     prob += pulp.lpSum(
         x[i] * float(df.at[i, price_col]) for i in players
         if pd.notna(df.at[i, price_col])
-    ) <= SALARY_CAP
+    ) <= cap
 
     # 3. Each selected player assigned to exactly one slot (active or reserve)
     for i in players:
