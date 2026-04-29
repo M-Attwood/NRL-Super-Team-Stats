@@ -21,6 +21,11 @@ MODEL_PATH = MODELS_DIR / "supercoach_model.keras"
 SCALER_PATH = MODELS_DIR / "scaler.pkl"
 FEATURE_COLS_PATH = MODELS_DIR / "feature_cols.pkl"
 
+# Pre-season heuristic: 1 predicted Supercoach point per $10K of player price.
+# Calibrated against 2022-2024 prices (~$200K minimum priced player ≈ 20 pts);
+# revisit if Supercoach rescales prices between seasons.
+POINTS_PER_DOLLAR = 1.0 / 10_000
+
 # ── NRL positions and teams for one-hot encoding ─────────────────────────────
 ALL_POSITIONS = ["HOK", "FRF", "2RF", "HFB", "5/8", "CTW", "FLB"]
 ALL_TEAMS = [
@@ -28,9 +33,19 @@ ALL_TEAMS = [
     "MEL", "NEW", "NQL", "PEN", "RDB", "SOU", "STI", "WST",
 ]
 
-# Numeric columns to scale
+# Numeric columns to scale and feed into the model.
+#
+# CRITICAL: `avg_points` is the TARGET (TARGET = "avg_points"). It must NEVER
+# appear here, otherwise the model trivially memorises target = feature and
+# reports leakage-driven validation MAE that doesn't reflect any real signal.
+# (This was a real bug — caught in the NN-only review and removed.)
+#
+# `price` was also removed earlier (NN-6 review item). Price lives separately
+# as `price_usd` for cap math in the optimizer. Pushing it through
+# StandardScaler added noise without signal — historical performance columns
+# already encode "player quality."
 SCALE_COLS = [
-    "price", "avg_points", "avg_last3", "avg_last5", "avg_last2",
+    "avg_last3", "avg_last5", "avg_last2",
     "avg_minutes", "points_per_minute", "break_even",
     "season_price_change", "round_price_change", "games_played",
     "coeff_variation", "pct_60plus",
@@ -53,8 +68,21 @@ SCALE_COLS = [
     "form_momentum",
 ]
 
-# Target column
+# Target column (raw, unscaled — `_raw` variants are saved before scaling).
 TARGET = "avg_points"
+
+# NN-2: predict delta from rolling-3 average instead of absolute score.
+# The model only has to learn the deviation from recent form, which has
+# much lower variance than the absolute score. After prediction we add the
+# rolling baseline back. Disable by setting USE_DELTA_TARGET = False (e.g.
+# for a head-to-head A/B test of the two targets).
+USE_DELTA_TARGET = True
+
+# NN-1: most-recent historical year is reserved as a held-out validation
+# set. The model is trained on years strictly older than this, so we get
+# an honest "next season" estimate instead of leaking through random
+# train/test splits.
+HOLDOUT_YEAR_OFFSET = 1  # holdout = max(scrape_year) - 0; train < that
 
 
 # ── Cleaning ──────────────────────────────────────────────────────────────────
@@ -174,9 +202,15 @@ def engineer_features(df: pd.DataFrame,
     # ── Preserve originals before scaling ────────────────────────────────────
     if "price" in df.columns:
         df["price_usd"] = df["price"].copy()
-    # Save raw avg_points so load_or_train_model can use unscaled targets
+    # Save raw versions so the trainer / predictor can use unscaled values:
+    #   avg_points_raw  → target column for training (NN-2 delta target uses
+    #                     this minus the rolling-3 average).
+    #   avg_last3_raw   → rolling baseline used by NN-2 to convert predicted
+    #                     deltas back to absolute Supercoach points.
     if "avg_points" in df.columns:
         df["avg_points_raw"] = df["avg_points"].copy()
+    if "avg_last3" in df.columns:
+        df["avg_last3_raw"] = df["avg_last3"].copy()
 
     # ── Scale numeric features ────────────────────────────────────────────────
     if scaler is None:
@@ -198,6 +232,11 @@ def engineer_features(df: pd.DataFrame,
     # Put scaled values back (price column is now scaled — use price_usd for $ amounts)
     df[feature_cols] = X_scaled
     df["_feature_cols_marker"] = 1  # sentinel so we know features are ready
+
+    # Defragment after the many `df["new_col"] = ...` insertions above.
+    # Without this, pandas emits PerformanceWarnings and downstream
+    # operations slow down substantially.
+    df = df.copy()
 
     log.info("engineer_features: %d features, %d rows", len(feature_cols), len(df))
     return df, scaler
@@ -242,18 +281,30 @@ def _build_model(n_features: int):
         keras.layers.Dense(1),
     ], name="supercoach_predictor")
 
+    # NN-7: Huber loss instead of MSE.
+    # Supercoach scores have outliers — a player who randomly scores 150
+    # one round shouldn't drag the model into chasing extreme tails.
+    # Huber is quadratic for small errors (like MSE) but linear for large
+    # ones (like MAE), giving the best of both.
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=0.001),
-        loss="mse",
+        loss=keras.losses.Huber(delta=1.0),
         metrics=["mae"],
     )
     return model
 
 
-def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False):
+def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False,
+                        holdout_year: int | None = None):
     """
     Load an existing saved model and fine-tune it, or train from scratch.
     Returns the trained Keras model.
+
+    holdout_year: explicit year to reserve for validation. If None, the
+    most recent year present in `df` is used (NN-1 default). Pass an
+    explicit value to lock the validation set across runs — useful for
+    reproducible benchmarking and for training on data older than this
+    year only.
     """
     import tensorflow as tf
     from tensorflow import keras
@@ -270,22 +321,67 @@ def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False):
         log.warning("Target column '%s' not in df — cannot train", TARGET)
         return None
 
-    X = df[feature_cols].fillna(0).values.astype(np.float32)
+    X_full = df[feature_cols].fillna(0).values.astype(np.float32)
     # Use raw (unscaled) avg_points as target so predictions are in original units
     target_col = "avg_points_raw" if "avg_points_raw" in df.columns else TARGET
-    y = df[target_col].fillna(0).values.astype(np.float32)
+    y_absolute = df[target_col].fillna(0).values.astype(np.float32)
 
-    # Remove rows where y is 0 (players with no history)
-    mask = y > 0
-    X, y = X[mask], y[mask]
+    # NN-2: build a delta target. The model learns avg_points - rolling_avg;
+    # at prediction time we add the rolling avg back. If avg_last3_raw isn't
+    # present (e.g. very old data), fall back to absolute target.
+    if USE_DELTA_TARGET and "avg_last3_raw" in df.columns:
+        baseline_raw = df["avg_last3_raw"].values.astype(np.float32)
+        # Where the rolling-3 baseline is missing, fall back to the absolute
+        # score so the delta is 0 for that row (i.e. neutral, no signal).
+        baseline = np.where(np.isnan(baseline_raw), y_absolute, baseline_raw)
+        y_full = y_absolute - baseline
+        log.info("Training with DELTA target (avg_points - avg_last3)")
+    else:
+        baseline = np.zeros_like(y_absolute)
+        y_full = y_absolute
+        log.info("Training with ABSOLUTE target (avg_points)")
 
-    if len(X) < 20:
-        log.warning("Not enough training samples (%d) — skipping model training", len(X))
+    # Remove rows where the absolute score is 0 (players with no history).
+    # We filter on y_absolute, not y_full — for the delta target a delta of
+    # 0 is a perfectly valid sample.
+    mask = y_absolute > 0
+    X_full = X_full[mask]
+    y_full = y_full[mask]
+
+    if len(X_full) < 20:
+        log.warning("Not enough training samples (%d) — skipping model training",
+                    len(X_full))
         return None
 
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.15, random_state=42
-    )
+    # NN-1: year-aware holdout. The most recent historical year is reserved
+    # for evaluation and never seen during training. This gives an honest
+    # "next-season" estimate instead of the random-split leakage we had
+    # before (where the same player could appear in train and test).
+    if "scrape_year" in df.columns:
+        years = pd.to_numeric(df["scrape_year"], errors="coerce")
+        years = years[mask].values
+        max_year = int(np.nanmax(years))
+        if holdout_year is None:
+            holdout_year = max_year - (HOLDOUT_YEAR_OFFSET - 1)
+        train_idx = years < holdout_year
+        val_idx = years == holdout_year
+        if train_idx.sum() < 20 or val_idx.sum() < 5:
+            log.warning("Not enough samples for year holdout (train=%d, val=%d)"
+                        " — falling back to random split",
+                        int(train_idx.sum()), int(val_idx.sum()))
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_full, y_full, test_size=0.15, random_state=42
+            )
+        else:
+            X_train, y_train = X_full[train_idx], y_full[train_idx]
+            X_val, y_val = X_full[val_idx], y_full[val_idx]
+            log.info("Year-aware split: train on years <%d (%d samples), "
+                     "validate on %d (%d samples)",
+                     holdout_year, len(X_train), holdout_year, len(X_val))
+    else:
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_full, y_full, test_size=0.15, random_state=42
+        )
 
     callbacks = [
         keras.callbacks.EarlyStopping(
@@ -333,6 +429,59 @@ def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False):
     return model
 
 
+# ── Opponent strength (NN-4) ──────────────────────────────────────────────────
+
+def compute_defensive_strength(df_historical: pd.DataFrame) -> pd.DataFrame:
+    """Build a (team, primary_position) → mean points-conceded table.
+
+    Uses per-round historical rows that have a non-null `vs_team` (i.e.
+    "this player scored X against opponent Y"). Aggregates to give an
+    expected-points-conceded estimate for each opponent at each position.
+
+    Returns a DataFrame with columns:
+        opponent_team, primary_position, expected_points_conceded, n_samples
+
+    Higher expected_points_conceded = weaker defence vs that position
+    (more attractive opponent for fantasy purposes).
+
+    Why this isn't yet wired into the model:
+      To turn this into a per-player feature we need to know who each
+      player's NEXT opponent is. The scraper currently fetches season
+      totals, not fixtures. Once fixture scraping is added, build a
+      `next_opponent` column on the prediction frame and merge this
+      table in on (next_opponent, primary_position). The hook point in
+      `build_prediction_features` is marked `TODO(NN-4)`.
+    """
+    df = df_historical.copy()
+    if "vs_team" not in df.columns or "avg_points" not in df.columns:
+        log.warning("Cannot compute defensive strength: missing vs_team or avg_points")
+        return pd.DataFrame()
+
+    df = df[df["vs_team"].notna() & (df["vs_team"].astype(str).str.strip() != "")]
+    if df.empty:
+        return pd.DataFrame()
+
+    df["primary_position"] = (
+        df["positions"].astype(str).str.split("|").str[0].fillna("UNK")
+    )
+    df["avg_points"] = pd.to_numeric(df["avg_points"], errors="coerce")
+    df = df[df["avg_points"].notna()]
+
+    grouped = (
+        df.groupby(["vs_team", "primary_position"])["avg_points"]
+          .agg(["mean", "size"])
+          .reset_index()
+          .rename(columns={
+              "vs_team": "opponent_team",
+              "mean": "expected_points_conceded",
+              "size": "n_samples",
+          })
+    )
+    log.info("Defensive strength: %d (team, position) cells from %d samples",
+             len(grouped), int(df.shape[0]))
+    return grouped
+
+
 # ── Historical feature builder ────────────────────────────────────────────────
 
 def build_prediction_features(df_2026: pd.DataFrame,
@@ -373,69 +522,142 @@ def build_prediction_features(df_2026: pd.DataFrame,
     else:
         df_hist = df_hist.drop_duplicates(subset=["player_name"], keep="last")
 
-    df_hist = df_hist.set_index("player_name")
+    df_hist_reset = df_hist.copy()  # already deduped, has player_name as a column
 
-    # Build output rows — one per 2026 player
-    result_rows = []
     # Position-group medians from historical data for rookies
-    hist_reset = df_hist.reset_index()
-    primary_pos = hist_reset["positions"].str.split("|").str[0].fillna("UNK")
-    hist_reset["_pp"] = primary_pos
-    numeric_hist = hist_reset.select_dtypes(include=[np.number]).columns.tolist()
-    pos_medians = hist_reset.groupby("_pp")[numeric_hist].median()
+    primary_pos_hist = df_hist_reset["positions"].str.split("|").str[0].fillna("UNK")
+    df_hist_reset["_pp"] = primary_pos_hist
+    numeric_hist = df_hist_reset.select_dtypes(include=[np.number]).columns.tolist()
+    pos_medians = df_hist_reset.groupby("_pp")[numeric_hist].median()
+    pos_medians_overall = df_hist_reset[numeric_hist].mean()
+    df_hist_reset = df_hist_reset.drop(columns=["_pp"])
 
-    for _, row_2026 in df_2026.iterrows():
-        name = row_2026.get("player_name", "")
-        if not name or str(name).strip() == "":
+    # ── Build the 2026 side: just metadata we want to overlay ────────────────
+    # Vectorised version of the per-row loop. Left-merging with the history
+    # gives us one row per 2026 player; rookies have NaN in historical
+    # columns and get filled from position-group medians.
+    meta = df_2026[["player_name"]].copy()
+    meta["player_name"] = meta["player_name"].astype(str).str.strip()
+    meta = meta[meta["player_name"] != ""].reset_index(drop=True)
+
+    pos_2026  = df_2026["positions"] if "positions" in df_2026.columns else pd.Series("", index=df_2026.index)
+    team_2026 = df_2026["team"]      if "team" in df_2026.columns      else pd.Series("", index=df_2026.index)
+    price_pref = df_2026.get("price_usd")
+    price_fallback = df_2026.get("price")
+    if price_pref is None and price_fallback is None:
+        price_2026 = pd.Series(np.nan, index=df_2026.index)
+    elif price_pref is None:
+        price_2026 = price_fallback
+    elif price_fallback is None:
+        price_2026 = price_pref
+    else:
+        price_2026 = price_pref.fillna(price_fallback)
+
+    meta["_pos_2026"]   = pos_2026.reindex(meta.index).fillna("").astype(str)
+    meta["_team_2026"]  = team_2026.reindex(meta.index).fillna("").astype(str)
+    meta["_price_2026"] = pd.to_numeric(price_2026.reindex(meta.index), errors="coerce")
+
+    # Left-merge against history; rookies get NaN for historical columns.
+    merged = meta.merge(df_hist_reset, on="player_name", how="left",
+                        suffixes=("", "_hist"))
+
+    # Pick a marker column to detect rookies. Prefer "scrape_year" (always
+    # present in historical rows); fall back to any non-name column.
+    marker_col = "scrape_year" if "scrape_year" in df_hist_reset.columns else next(
+        (c for c in df_hist_reset.columns if c != "player_name"), None
+    )
+    if marker_col is None:
+        is_rookie = pd.Series(False, index=merged.index)
+    else:
+        is_rookie = merged[marker_col].isna()
+
+    # Fill rookie rows with position-group medians
+    if is_rookie.any():
+        rookie_pos = (
+            merged["_pos_2026"].astype(str).str.split("|").str[0]
+            .replace("", "UNK")
+        )
+        for col in pos_medians.columns:
+            median_for_row = rookie_pos.map(pos_medians[col]).fillna(
+                pos_medians_overall[col]
+            )
+            merged.loc[is_rookie, col] = median_for_row[is_rookie].astype(
+                merged[col].dtype if not merged[col].isna().all() else float,
+                errors="ignore",
+            )
+
+    # Overlay 2026 metadata where it's truthy/present (matches original semantics).
+    mask_pos   = merged["_pos_2026"].str.strip() != ""
+    mask_team  = merged["_team_2026"].str.strip() != ""
+    mask_price = merged["_price_2026"].notna()
+    if "positions" in merged.columns:
+        merged.loc[mask_pos, "positions"] = merged.loc[mask_pos, "_pos_2026"]
+    else:
+        merged["positions"] = merged["_pos_2026"]
+    if "team" in merged.columns:
+        merged.loc[mask_team, "team"] = merged.loc[mask_team, "_team_2026"]
+    else:
+        merged["team"] = merged["_team_2026"]
+    if "price" in merged.columns:
+        merged.loc[mask_price, "price"] = merged.loc[mask_price, "_price_2026"]
+    else:
+        merged["price"] = merged["_price_2026"]
+    merged["scrape_year"] = 2026
+
+    merged = merged.drop(columns=["_pos_2026", "_team_2026", "_price_2026"])
+
+    # ── Overlay current-season form columns (NN-2 freshness fix) ─────────────
+    # The delta-target predictor adds back avg_last3_raw at predict time; if
+    # we left it as the historical-year value, mid-season predictions would
+    # baseline off LAST year's recent form rather than this season's. Take
+    # 2026 form values whenever the player has played enough games to have
+    # them populated — otherwise keep the historical fallback.
+    FORM_COLUMNS = (
+        "avg_last3", "avg_last5", "avg_last2",
+        "avg_last3_raw", "avg_points", "avg_points_raw",
+        "form_momentum", "games_played",
+        "avg_minutes", "avg_mins_last3", "avg_mins_last5",
+        "points_per_minute", "break_even",
+        "season_price_change", "round_price_change",
+    )
+    df_2026_indexed = df_2026.drop_duplicates(subset=["player_name"], keep="last")
+    df_2026_indexed = df_2026_indexed.set_index("player_name")
+    for col in FORM_COLUMNS:
+        if col not in df_2026_indexed.columns:
             continue
-
-        # Use price_usd (pre-scaling raw $) if available; otherwise fall back to price
-        # This handles both raw and already-engineered 2026 DataFrames.
-        price_raw = row_2026.get("price_usd")
-        if price_raw is None or (isinstance(price_raw, float) and np.isnan(price_raw)):
-            price_raw = row_2026.get("price")
-        pos_2026  = row_2026.get("positions", "")
-        team_2026 = row_2026.get("team", "")
-
-        if name in df_hist.index:
-            # Start from raw historical stats; only overwrite 2026-specific metadata
-            hist_row = df_hist.loc[name].to_dict()
-            if pd.notna(price_raw):
-                hist_row["price"] = price_raw
-            hist_row["player_name"] = name
-            hist_row["positions"]   = pos_2026 if pos_2026 else hist_row.get("positions", "")
-            hist_row["team"]        = team_2026 if team_2026 else hist_row.get("team", "")
-            hist_row["scrape_year"] = 2026
-            result_rows.append(hist_row)
+        fresh = pd.to_numeric(
+            merged["player_name"].map(df_2026_indexed[col]),
+            errors="coerce",
+        )
+        if col not in merged.columns:
+            merged[col] = fresh
         else:
-            # Rookie — no historical data; build row from position-group medians
-            pp = str(pos_2026).split("|")[0] or "UNK"
-            if pp in pos_medians.index:
-                rookie_row = pos_medians.loc[pp].to_dict()
-            else:
-                rookie_row = pos_medians.mean().to_dict()
-            if pd.notna(price_raw):
-                rookie_row["price"] = price_raw
-            rookie_row["player_name"] = name
-            rookie_row["positions"]   = pos_2026
-            rookie_row["team"]        = team_2026
-            rookie_row["scrape_year"] = 2026
-            result_rows.append(rookie_row)
+            # Only overlay where the 2026 value is present AND non-zero
+            # (zero is what the scraper writes pre-game, i.e. no signal yet).
+            mask_fresh = fresh.notna() & (fresh != 0)
+            merged.loc[mask_fresh, col] = fresh[mask_fresh]
 
-    if not result_rows:
+    # TODO(NN-4): once fixture scraping lands, add a `next_opponent` column
+    # here and merge in `compute_defensive_strength(df_historical)` on
+    # (next_opponent, primary_position). That gives the model an "ease of
+    # next matchup" signal — historically the single biggest fantasy edge.
+    # TODO(NN-3): replace the per-position one-hot columns with a learned
+    # position embedding. Refactor `_build_model` to use the Functional
+    # API: numeric feature input + position id input → embedding(7, 4) →
+    # concat → dense head. Drop pos_* columns from SCALE_COLS.
+    # TODO(NN-5): switch the regression head to predict (mean, log_var)
+    # and use a Gaussian NLL loss. Pass the resulting std into the
+    # optimizer so it can prefer higher-variance picks for differentials.
+
+    if merged.empty:
         log.warning("build_prediction_features: no rows produced")
         return df_2026.copy()
 
-    df_pred = pd.DataFrame(result_rows)
-    # Ensure player_name is first and is a column
-    if "player_name" not in df_pred.columns and df_pred.index.name == "player_name":
-        df_pred = df_pred.reset_index()
-
+    n_with_hist = int((~is_rookie).sum())
+    n_rookies = int(is_rookie.sum())
     log.info("build_prediction_features: %d players (%d with history, %d rookies)",
-             len(df_pred),
-             sum(p.get("player_name", "") in df_hist.index for p in result_rows),
-             sum(p.get("player_name", "") not in df_hist.index for p in result_rows))
-    return df_pred.reset_index(drop=True)
+             len(merged), n_with_hist, n_rookies)
+    return merged.reset_index(drop=True)
 
 
 # ── Prediction ────────────────────────────────────────────────────────────────
@@ -527,8 +749,11 @@ def predict_next_round_scores(df: pd.DataFrame,
     # ── No model yet ──────────────────────────────────────────────────────────
     if not MODEL_PATH.exists():
         if pre_season and "price_usd" in df.columns:
-            log.info("Pre-season fallback: using price / 10000 as performance proxy")
-            df["predicted_points"] = (df["price_usd"].fillna(0) / 10000).clip(lower=0)
+            log.info("Pre-season fallback: using price * %.6f as performance proxy",
+                     POINTS_PER_DOLLAR)
+            df["predicted_points"] = (
+                df["price_usd"].fillna(0) * POINTS_PER_DOLLAR
+            ).clip(lower=0)
         else:
             log.warning("No saved model — using avg_points as fallback")
             df["predicted_points"] = avg_pts
@@ -546,6 +771,13 @@ def predict_next_round_scores(df: pd.DataFrame,
 
     X = df[feature_cols].fillna(0).values.astype(np.float32)
     preds = model.predict(X, verbose=0).flatten()
+
+    # NN-2: if we trained against a delta target, the model output is
+    # (score - rolling_3_avg). Add the rolling baseline back to recover
+    # absolute predicted points.
+    if USE_DELTA_TARGET and "avg_last3_raw" in df.columns:
+        baseline = df["avg_last3_raw"].fillna(0).values.astype(np.float32)
+        preds = preds + baseline
     df["predicted_points"] = preds.clip(min=0)
 
     # Cold-start: replace zero/negative predictions with position-group median

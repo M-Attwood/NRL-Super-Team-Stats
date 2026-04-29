@@ -123,9 +123,7 @@ API_COLUMN_MAP = {
 DROP_COLS = {"Name", "Team2", "Photo", "Namedot", "Posn", "Year",
              "Time", "Played", "_posn1", "_posn2"}
 
-DATA_RAW       = Path("data/raw")
-DATA_ROUNDS    = Path("data/rounds")
-DATA_PROCESSED = Path("data/processed")
+from paths import DATA_RAW, DATA_ROUNDS, DATA_PROCESSED
 
 
 def _ensure_dirs():
@@ -154,7 +152,11 @@ def _get_retry(session: requests.Session, url: str, params: dict,
             r.raise_for_status()
             time.sleep(random.uniform(0.8, 1.5))
             return r
-        except Exception as exc:
+        except (requests.RequestException, ValueError) as exc:
+            # RequestException covers timeouts, connection errors, HTTP errors
+            # raised by raise_for_status. ValueError covers JSON decode issues
+            # if a caller chains .json() on the response. Bugs in our own code
+            # (TypeError, AttributeError) should propagate, not be retried.
             log.warning("Attempt %d/%d failed: %s", attempt + 1, max_retries, exc)
             time.sleep(delay)
             delay *= 2

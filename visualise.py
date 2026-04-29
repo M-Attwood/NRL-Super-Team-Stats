@@ -56,7 +56,8 @@ def _load_model():
 
 def _prepare_data():
     """Load master data, engineer features, split into train/val."""
-    df_all = pd.read_csv("data/processed/master_historical.csv", low_memory=False)
+    from paths import MASTER_HISTORICAL_CSV
+    df_all = pd.read_csv(MASTER_HISTORICAL_CSV, low_memory=False)
     df_clean = clean_data(df_all)
     df_feat, scaler = engineer_features(df_clean, fit_scaler=True)
 
@@ -91,11 +92,11 @@ def _get_predictions(df_feat, df_pred=None):
     if df_2026.empty:
         return None
 
-    hist_path = Path("data/processed/master_historical.csv")
-    if not hist_path.exists():
+    from paths import MASTER_HISTORICAL_CSV
+    if not MASTER_HISTORICAL_CSV.exists():
         return None
 
-    hist_raw = pd.read_csv(hist_path, low_memory=False)
+    hist_raw = pd.read_csv(MASTER_HISTORICAL_CSV, low_memory=False)
     hist_with_scores = hist_raw[
         pd.to_numeric(hist_raw["avg_points"], errors="coerce").fillna(0) > 0
     ]
@@ -345,7 +346,7 @@ def plot_price_vs_predicted(ax, df_feat, df_pred=None, round_num=1):
             df_adv = pd.read_csv(adv_path)
             if "is_starter" in df_adv.columns:
                 confirmed_starters = set(
-                    df_adv.loc[df_adv["is_starter"] == True, "player_name"]
+                    df_adv.loc[df_adv["is_starter"], "player_name"]
                 )
             break
 
@@ -692,7 +693,7 @@ def _starters_for_round(round_num: int) -> set:
         if p.exists():
             df = pd.read_csv(p)
             if "is_starter" in df.columns:
-                return set(df.loc[df["is_starter"] == True, "player_name"])
+                return set(df.loc[df["is_starter"], "player_name"])
     return set()
 
 
@@ -754,7 +755,8 @@ def plot_squad_bye_schedule(ax, round_num=1):
         return
 
     # Load player data to get bye_round per player
-    raw_files = sorted(Path("data/raw").glob("nrl_data_2026*.csv"), reverse=True)
+    from paths import DATA_RAW
+    raw_files = sorted(DATA_RAW.glob("nrl_data_2026*.csv"), reverse=True)
     if not raw_files:
         ax.text(0.5, 0.5, "No raw data", ha="center", va="center",
                 transform=ax.transAxes)
@@ -929,7 +931,8 @@ def run_player_analysis(df_pred=None, round_num=1):
     Generate outputs/player_analysis.png — 4-panel player/squad analysis.
     """
     if df_pred is None:
-        raw_files = sorted(Path("data/raw").glob("nrl_data_2026*.csv"), reverse=True)
+        from paths import DATA_RAW, MASTER_HISTORICAL_CSV
+        raw_files = sorted(DATA_RAW.glob("nrl_data_2026*.csv"), reverse=True)
         if not raw_files:
             log.warning("No raw data for player analysis. Skipping.")
             return
@@ -937,9 +940,8 @@ def run_player_analysis(df_pred=None, round_num=1):
         df_raw = pd.read_csv(raw_files[0], low_memory=False)
         df_clean = clean_data(df_raw)
         df_feat, _ = engineer_features(df_clean, fit_scaler=False)
-        hist_path = Path("data/processed/master_historical.csv")
-        hist = (pd.read_csv(hist_path, low_memory=False)
-                if hist_path.exists() else pd.DataFrame())
+        hist = (pd.read_csv(MASTER_HISTORICAL_CSV, low_memory=False)
+                if MASTER_HISTORICAL_CSV.exists() else pd.DataFrame())
         df_pred = predict_next_round_scores(df_feat, df_historical=hist)
 
     fig, axes = plt.subplots(2, 2, figsize=(22, 24))

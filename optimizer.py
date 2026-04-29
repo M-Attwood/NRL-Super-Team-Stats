@@ -7,7 +7,9 @@ Objective: maximise (0.75 × predicted_points + 0.20 × diversity_score
            minus a soft penalty for picking >3 players from one NRL club.
 
 Constraints:
-  - Total price  ≤ $11,950,000
+  - Total price  ≤ salary_cap (defaults to SALARY_CAP = $11,950,000;
+                  callers may pass a higher mid-season value to reflect
+                  earned price-rise allowance)
   - Squad size   = 26 players (25 position slots + 1 flex)
   - Position quotas: HOK=2, FRF=4, 2RF=6, HFB=2, 5/8=2, CTW=7, FLB=2
   - Multi-position players fill exactly one quota slot

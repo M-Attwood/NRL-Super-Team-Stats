@@ -304,7 +304,8 @@ ROUND_STARTERS = [
 #  DATA PIPELINE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-HIST_YEARS = [2022, 2023, 2024, 2025]
+from datetime import datetime as _dt
+HIST_YEARS = list(range(2022, _dt.now().year))
 
 
 def load_player_pool(round_num: int, year: int = 2026,
@@ -316,12 +317,16 @@ def load_player_pool(round_num: int, year: int = 2026,
     from scraper import scrape_full, update_historical_data
     from model import clean_data, engineer_features, load_or_train_model, predict_next_round_scores
 
-    for d in ["data/raw", "data/rounds", "data/processed", "models", "outputs"]:
-        Path(d).mkdir(parents=True, exist_ok=True)
+    from paths import (
+        DATA_RAW, DATA_ROUNDS, DATA_PROCESSED, MODELS_DIR, OUTPUTS_DIR,
+    )
+    for d in (DATA_RAW, DATA_ROUNDS, DATA_PROCESSED, MODELS_DIR, OUTPUTS_DIR):
+        d.mkdir(parents=True, exist_ok=True)
 
     # Step 1: Scrape or load 2026 data
     if no_scrape:
-        raw_files = sorted(Path("data/raw").glob("nrl_data_*.csv"), reverse=True)
+        from paths import DATA_RAW
+        raw_files = sorted(DATA_RAW.glob("nrl_data_*.csv"), reverse=True)
         if not raw_files:
             log.error("No data files found. Run without --no-scrape first.")
             sys.exit(1)
@@ -369,9 +374,18 @@ def load_player_pool(round_num: int, year: int = 2026,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _normalise_name(name: str) -> str:
-    """Normalise a name for matching: lowercase, strip whitespace and
-    apostrophe variants (the scraper drops apostrophes, so 'To'o' and 'Too'
-    must compare equal; same for curly ', ` and straight ')."""
+    """Normalise a name for matching: lowercase, strip surrounding whitespace
+    and apostrophe variants.
+
+    Why: the scraper strips all apostrophes from player names (e.g. "Brian
+    To'o" arrives as "Too, Brian"), so apostrophe variants in user input
+    must collapse to the same form.
+
+    Contract: this function MUST NOT collapse two distinct players to the
+    same key. The variants below are pure punctuation; nothing in this set
+    occurs in a way that would distinguish two players. If you ever extend
+    this list, run a uniqueness check across the full pool first.
+    """
     out = name.strip().lower()
     for ch in ("'", "’", "ʻ", "`"):
         out = out.replace(ch, "")
@@ -520,9 +534,31 @@ def resolve_names(names: list[str], pool: pd.DataFrame,
 #  SQUAD HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+_MISSING_PRICE_WARNED: set[str] = set()
+
+
 def _get_price(p: dict) -> float:
-    """Extract player price (prefer price_usd over scaled price)."""
-    return float(p.get("price_usd", p.get("price", 0)) or 0)
+    """Extract player price (prefer price_usd over scaled price).
+
+    Warns once per player when neither field is present — a missing price
+    is data corruption (the salary cap math depends on it), not a normal
+    case. Defaulting silently to 0 has caused phantom-cap-room bugs.
+    """
+    raw = p.get("price_usd")
+    if raw in (None, "", 0):
+        raw = p.get("price")
+    if raw in (None, "", 0):
+        name = p.get("player_name", "?")
+        if name not in _MISSING_PRICE_WARNED:
+            log.warning("No price for %s — treating as $0 (cap math may be wrong)", name)
+            _MISSING_PRICE_WARNED.add(name)
+        return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        log.warning("Unparseable price %r for %s — treating as $0",
+                    raw, p.get("player_name", "?"))
+        return 0.0
 
 
 def _is_on_bye(player: dict, round_num: int) -> bool:
@@ -551,19 +587,85 @@ def build_squad_dicts(squad_names: list[str],
 
 
 def flatten_team_result(result: dict, pool: pd.DataFrame) -> list[dict]:
-    """Flatten select_team() result into a list of player dicts."""
+    """Flatten select_team() result into a list of player dicts.
+
+    Adds a "role" field tagging Starting/Bench/Flex/Reserve so downstream
+    code (e.g. scoring-18 totals) can respect the LP's position
+    assignments instead of guessing from predicted_points.
+    """
+    role_for_group = {
+        "starting_13": "Starting",
+        "bench_4": "Bench",
+        "flex_1": "Flex",
+        "reserves_8": "Reserve",
+    }
     squad = []
-    for group in ["starting_13", "bench_4", "flex_1", "reserves_8"]:
+    for group, role in role_for_group.items():
         for p in result.get(group, []):
             name = p["player_name"]
             rows = pool[pool["player_name"] == name]
             if not rows.empty:
                 d = _player_dict(rows.iloc[0])
                 d.update(p)  # overlay optimizer assignments
-                squad.append(d)
             else:
-                squad.append(p)
+                d = dict(p)
+            d["role"] = role
+            squad.append(d)
     return squad
+
+
+def _scoring_18_total(squad: list[dict],
+                      confirmed_starters: set[str] | None = None) -> float:
+    """Sum the predicted points of the 18 players who would actually score
+    this round, respecting Supercoach position quotas (13 starting +
+    4 bench + 1 flex). Optionally restricts the candidate pool to
+    confirmed starters — players not in the set are skipped because they
+    would score 0.
+
+    The greedy: walk players highest-predicted first, drop them into the
+    first eligible (position, role) slot that still has room. This is the
+    same heuristic Supercoach itself uses for emergencies, so it's a
+    realistic ceiling rather than an inflated top-18-by-points sum.
+    """
+    from optimizer import STARTING_SLOTS, BENCH_SLOTS, _eligible_positions
+
+    quotas: dict[tuple[str, str], int] = {}
+    for pos, n in STARTING_SLOTS.items():
+        quotas[(pos, "Starting")] = n
+    for pos, n in BENCH_SLOTS.items():
+        quotas[(pos, "Bench")] = n
+    flex_filled = False
+
+    eligible = [
+        p for p in squad
+        if confirmed_starters is None
+        or p.get("player_name") in confirmed_starters
+    ]
+    eligible.sort(key=lambda p: p.get("predicted_points", 0), reverse=True)
+
+    total = 0.0
+    used = set()
+    for p in eligible:
+        name = p.get("player_name")
+        if name in used:
+            continue
+        positions = _eligible_positions(p.get("positions", ""))
+        placed = False
+        for pos in positions:
+            for role in ("Starting", "Bench"):
+                if quotas.get((pos, role), 0) > 0:
+                    quotas[(pos, role)] -= 1
+                    total += p.get("predicted_points", 0)
+                    used.add(name)
+                    placed = True
+                    break
+            if placed:
+                break
+        if not placed and not flex_filled:
+            total += p.get("predicted_points", 0)
+            used.add(name)
+            flex_filled = True
+    return total
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -616,10 +718,6 @@ def compare_squads(ideal_squad: list[dict], current_squad: list[dict],
     players_to_drop = sorted(
         [p for p in current_squad if p["player_name"] in drop_names],
         key=lambda p: p.get("predicted_points", 0),
-        ascending_key=True,
-    ) if False else sorted(
-        [p for p in current_squad if p["player_name"] in drop_names],
-        key=lambda p: p.get("predicted_points", 0),
     )
 
     # Non-starters in current squad
@@ -629,16 +727,17 @@ def compare_squads(ideal_squad: list[dict], current_squad: list[dict],
     ]
     non_starters.sort(key=lambda p: p.get("predicted_points", 0))
 
-    # Scoring totals (top 18 by predicted_points for each)
-    ideal_pts = sum(sorted(
-        [p.get("predicted_points", 0) for p in ideal_squad],
-        reverse=True,
-    )[:18])
-    current_pts = sum(sorted(
-        [p.get("predicted_points", 0) for p in current_squad
-         if p["player_name"] in confirmed_starters],
-        reverse=True,
-    )[:18])
+    # Scoring totals (Supercoach scores the 18 active players: 13 starting
+    # + 4 bench + 1 flex). The ideal team already has roles assigned by the
+    # LP, so we trust those. The current squad is a flat list, so we pick
+    # the highest-predicted player into each quota slot greedily — this
+    # gives a position-respecting ceiling rather than the inflated
+    # "top 18 regardless of role" sum that the previous code computed.
+    ideal_pts = sum(
+        p.get("predicted_points", 0) for p in ideal_squad
+        if p.get("role", "").lower() in ("starting", "bench", "flex")
+    )
+    current_pts = _scoring_18_total(current_squad, confirmed_starters)
 
     return {
         "overlap": [p for p in current_squad if p["player_name"] in overlap_names],
@@ -801,6 +900,14 @@ def recommend_trades(current_squad: list[dict],
             working_squad = new_squad
             # Update salary for next iteration
             current_salary = trade["new_salary"]
+
+    # Defensive: each individual trade was validated, but if multiple trades
+    # interact (one creates an imbalance another fixes), the intermediate
+    # state could be invalid. Re-validate the final composite squad.
+    if selected and not validate_position_quotas(working_squad):
+        log.error("Composite squad after trades fails position quotas — "
+                  "discarding all trade recommendations to be safe.")
+        return []
 
     return selected
 
@@ -1271,19 +1378,62 @@ def generate_trade_chart(df_pred: pd.DataFrame,
 #  MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _load_round_inputs(round_num: int) -> tuple[list[str], list[str]]:
+    """Load (squad, starters) for a round from data/inputs/round_{n}.yaml.
+
+    Falls back to the hardcoded MY_SQUAD / ROUND_STARTERS lists at the top
+    of this module if the YAML file isn't present (so the existing
+    workflow keeps working). Once all weekly data lives in YAML you can
+    delete the hardcoded lists.
+
+    Always logs which path was used so the data source is traceable from
+    the run log alone — no detective work to figure out "where did this
+    squad come from?" if a wrong lineup ever ships.
+    """
+    import yaml
+    from paths import DATA_INPUTS
+
+    yaml_path = DATA_INPUTS / f"round_{round_num}.yaml"
+    if yaml_path.exists():
+        log.info("[inputs source] YAML  →  %s", yaml_path)
+        doc = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        squad = doc.get("squad", [])
+        starters = doc.get("starters", [])
+        if not squad or not starters:
+            log.error("%s is missing 'squad' or 'starters' keys", yaml_path)
+            sys.exit(1)
+        return squad, starters
+
+    if MY_SQUAD and ROUND_STARTERS:
+        log.warning(
+            "[inputs source] FALLBACK  →  hardcoded MY_SQUAD/ROUND_STARTERS in "
+            "trade_advisor.py (no %s found). Migrate this round to YAML when "
+            "you next update.",
+            yaml_path,
+        )
+        return list(MY_SQUAD), list(ROUND_STARTERS)
+
+    log.error(
+        "[inputs source] MISSING — no %s, and the hardcoded MY_SQUAD/ROUND_STARTERS "
+        "lists are empty. Cannot run the advisor without round inputs.",
+        yaml_path,
+    )
+    sys.exit(1)
+
+
 def run_advisor(round_num: int = None, no_scrape: bool = False,
                 max_trades: int = 2):
     """Run the full trade advisor pipeline."""
     if round_num is None:
         round_num = CURRENT_ROUND
 
-    if not MY_SQUAD:
-        log.error("MY_SQUAD is empty. Paste your 26 player names at the top "
-                  "of trade_advisor.py")
+    squad_input, starters_input = _load_round_inputs(round_num)
+    if not squad_input:
+        log.error("No squad found for round %d (check data/inputs/round_%d.yaml)",
+                  round_num, round_num)
         sys.exit(1)
-    if not ROUND_STARTERS:
-        log.error("ROUND_STARTERS is empty. Paste the confirmed starters at "
-                  "the top of trade_advisor.py")
+    if not starters_input:
+        log.error("No confirmed starters for round %d", round_num)
         sys.exit(1)
 
     # Step 1: Load player pool with predictions
@@ -1295,8 +1445,8 @@ def run_advisor(round_num: int = None, no_scrape: bool = False,
 
     # Step 2: Resolve names against pool
     log.info("Matching squad names ...")
-    squad_names = resolve_names(MY_SQUAD, df_pred, label="squad players")
-    starter_names = resolve_names(ROUND_STARTERS, df_pred,
+    squad_names = resolve_names(squad_input, df_pred, label="squad players")
+    starter_names = resolve_names(starters_input, df_pred,
                                   label="confirmed starters")
     confirmed_starters = set(starter_names)
 
@@ -1305,7 +1455,7 @@ def run_advisor(round_num: int = None, no_scrape: bool = False,
         sys.exit(1)
 
     log.info("Matched %d/%d squad, %d starters",
-             len(squad_names), len(MY_SQUAD), len(confirmed_starters))
+             len(squad_names), len(squad_input), len(confirmed_starters))
 
     # Step 3: Build player dicts for current squad
     current_squad = build_squad_dicts(squad_names, df_pred)

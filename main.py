@@ -24,6 +24,7 @@ Usage:
 import argparse
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -35,14 +36,30 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-HIST_YEARS = [2022, 2023, 2024, 2025]
+# Historical seasons used for model training. The 2026 (current) season is
+# scraped separately and merged in. Going back to 2022 gives ~4 years of data,
+# which is plenty for the position-conditioned features we build.
+_HIST_START_YEAR = 2022
+
+
+def _historical_years(current_season: int) -> list[int]:
+    """All complete seasons before the current one, going back to _HIST_START_YEAR."""
+    return list(range(_HIST_START_YEAR, current_season))
+
+
+# Default historical year list, derived from today's date. Override per call
+# if you need a frozen window for reproducibility.
+HIST_YEARS = _historical_years(datetime.now().year)
 
 
 # ── Directory setup ───────────────────────────────────────────────────────────
 
 def create_dirs():
-    for d in ["data/raw", "data/rounds", "data/processed", "models", "outputs"]:
-        Path(d).mkdir(parents=True, exist_ok=True)
+    from paths import (
+        DATA_RAW, DATA_ROUNDS, DATA_PROCESSED, MODELS_DIR, OUTPUTS_DIR,
+    )
+    for d in (DATA_RAW, DATA_ROUNDS, DATA_PROCESSED, MODELS_DIR, OUTPUTS_DIR):
+        d.mkdir(parents=True, exist_ok=True)
 
 
 # ── Round number detection ────────────────────────────────────────────────────
@@ -67,11 +84,23 @@ def run_scraper(year: int, historical: bool) -> pd.DataFrame:
     return df_new
 
 
-def load_existing_data(path: str) -> pd.DataFrame:
-    p = Path(path)
-    if not p.exists():
-        log.error("Data file not found: %s — run without --no-scrape first", p)
-        sys.exit(1)
+def load_existing_data(path: str | None) -> pd.DataFrame:
+    """Load a cached scrape. If path is None, falls back to the most
+    recent nrl_data_*.csv in DATA_RAW so the script keeps working as the
+    season progresses without manually bumping a default date."""
+    from paths import DATA_RAW
+    if path is None:
+        candidates = sorted(DATA_RAW.glob("nrl_data_*.csv"), reverse=True)
+        if not candidates:
+            log.error("No cached data in %s — run without --no-scrape first",
+                      DATA_RAW)
+            sys.exit(1)
+        p = candidates[0]
+    else:
+        p = Path(path)
+        if not p.exists():
+            log.error("Data file not found: %s — run without --no-scrape first", p)
+            sys.exit(1)
     df = pd.read_csv(p, low_memory=False)
     log.info("Loaded %d rows from %s", len(df), p)
     return df
@@ -96,8 +125,9 @@ def load_or_scrape_historical(df_2026: pd.DataFrame,
     years_to_scrape = []
     frames = []
 
+    from paths import DATA_RAW
     for yr in years:
-        raw_path = Path(f"data/raw/nrl_data_{yr}.csv")
+        raw_path = DATA_RAW / f"nrl_data_{yr}.csv"
         if raw_path.exists() and not force_rescrape:
             log.info("── Step 1b: Loading cached %d data from %s ──", yr, raw_path)
             df_yr = pd.read_csv(raw_path, low_memory=False)
@@ -156,10 +186,12 @@ def run_feature_engineering(df: pd.DataFrame) -> tuple:
     return df_feat, scaler
 
 
-def run_model(df_feat: pd.DataFrame, retrain: bool):
+def run_model(df_feat: pd.DataFrame, retrain: bool,
+              holdout_year: int | None = None):
     from model import load_or_train_model
     log.info("── Step 4: Training model on historical data ──")
-    model = load_or_train_model(df_feat, force_retrain=retrain)
+    model = load_or_train_model(df_feat, force_retrain=retrain,
+                                holdout_year=holdout_year)
     if model is None:
         log.warning("Model training skipped (not enough data with avg_points > 0).")
     return model
@@ -203,13 +235,18 @@ def main():
                         help="Force re-scrape of 2024/2025 data even if cached")
     parser.add_argument("--retrain", action="store_true",
                         help="Force full model retrain from scratch")
+    parser.add_argument("--holdout-year", type=int, default=None,
+                        help="Year to reserve for validation (default: most "
+                             "recent year in data). Train uses years strictly "
+                             "older than this.")
     parser.add_argument("--round", type=int, default=None)
     parser.add_argument("--plan", action="store_true",
                         help="Run season-long bye round planner after optimizer")
     parser.add_argument("--plan-from-round", type=int, default=1,
                         help="Start season plan from this round (default: 1)")
-    parser.add_argument("--data", default="data/raw/nrl_data_2026-02-27.csv",
-                        help="CSV to use when --no-scrape is set")
+    parser.add_argument("--data", default=None,
+                        help="CSV to use when --no-scrape is set "
+                             "(default: most recent in data/raw/)")
     args = parser.parse_args()
 
     log.info("=" * 55)
@@ -247,7 +284,7 @@ def main():
     df_feat, _ = run_feature_engineering(df_all)
 
     # ── Step 4: Train model on 2024+2025 rows (avg_points > 0) ───────────────
-    run_model(df_feat, retrain=args.retrain)
+    run_model(df_feat, retrain=args.retrain, holdout_year=args.holdout_year)
 
     # ── Step 5: Predict 2026 scores using historical feature lookup ───────────
     # Pass the raw historical data (before feature engineering) so that

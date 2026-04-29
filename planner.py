@@ -251,15 +251,21 @@ def _build_pool_candidates(squad: list[dict], pool: pd.DataFrame,
 
 def find_best_trades(squad: list[dict], pool: pd.DataFrame,
                      current_round: int, max_trades: int,
-                     trades_remaining: int) -> list[tuple[dict, dict, float]]:
+                     trades_remaining: int,
+                     salary_cap: int | None = None) -> list[tuple[dict, dict, float]]:
     """
     Find the best PERMANENT trades to make this round.
     Returns list of (player_out, player_in, net_value) tuples.
+
+    salary_cap: optional override for the trade-time cap. Defaults to the
+    starting cap, but mid-season callers should pass max(default_cap,
+    current_team_value) to reflect price-rise allowance.
     """
     allowed = min(max_trades, trades_remaining)
     if allowed <= 0:
         return []
 
+    cap = salary_cap if salary_cap is not None else SALARY_CAP
     current_salary = sum(_get_price(p) for p in squad)
     pool_candidates = _build_pool_candidates(squad, pool, current_round)
 
@@ -268,7 +274,7 @@ def find_best_trades(squad: list[dict], pool: pd.DataFrame,
         out_price = _get_price(p_out)
         for p_in in pool_candidates:
             in_price = _get_price(p_in)
-            if current_salary - out_price + in_price > SALARY_CAP:
+            if current_salary - out_price + in_price > cap:
                 continue
             net_val = evaluate_trade(p_out, p_in, current_round)
             if net_val > 0:
@@ -299,11 +305,14 @@ def find_best_trades(squad: list[dict], pool: pd.DataFrame,
 
 def find_bye_loop_trades(squad: list[dict], pool: pd.DataFrame,
                           bye_round: int, max_loops: int,
-                          trades_remaining: int) -> list[dict]:
+                          trades_remaining: int,
+                          salary_cap: int | None = None) -> list[dict]:
     """
     Find the best bye loop trades for an upcoming bye round.
     Each loop: trade out a bye-affected scorer, trade in a non-bye replacement.
     Scheduled trade-back happens in bye_round + 1.
+
+    salary_cap: optional override (see find_best_trades for rationale).
 
     Returns list of loop dicts:
         {out: player_dict, temp_in: player_dict, gain: float}
@@ -317,6 +326,7 @@ def find_bye_loop_trades(squad: list[dict], pool: pd.DataFrame,
     if not bye_teams:
         return []
 
+    cap = salary_cap if salary_cap is not None else SALARY_CAP
     current_salary = sum(_get_price(p) for p in squad)
     squad_names = {p["player_name"] for p in squad}
 
@@ -347,7 +357,7 @@ def find_bye_loop_trades(squad: list[dict], pool: pd.DataFrame,
         out_price = _get_price(p_out)
         for p_in in pool_candidates:
             in_price = _get_price(p_in)
-            if current_salary - out_price + in_price > SALARY_CAP:
+            if current_salary - out_price + in_price > cap:
                 continue
             # Gain = replacement scores in the bye round; original would score 0
             gain = p_in.get("predicted_points", 0)
@@ -568,12 +578,18 @@ def run_season_plan(df_pred: pd.DataFrame,
         if (loop_target is not None
                 and remaining_trades_this_round > 0
                 and TOTAL_TRADES - trades_used >= 2):  # need 2 per loop
+            # Effective cap = max(starting cap, current squad value).
+            # Mid-season price rises don't claw back team value, so the
+            # binding constraint at trade time is whichever is higher.
+            effective_cap = max(SALARY_CAP,
+                                int(sum(_get_price(p) for p in squad)))
             loops = find_bye_loop_trades(
                 squad=squad,
                 pool=df_pred,
                 bye_round=loop_target,
                 max_loops=remaining_trades_this_round,
                 trades_remaining=TOTAL_TRADES - trades_used,
+                salary_cap=effective_cap,
             )
             for loop in loops:
                 if trades_used >= TOTAL_TRADES or len(trades_made) >= trade_limit:
@@ -616,12 +632,15 @@ def run_season_plan(df_pred: pd.DataFrame,
 
         # ── Permanent trades ─────────────────────────────────────────────────
         if remaining_trades_this_round > 0:
+            effective_cap = max(SALARY_CAP,
+                                int(sum(_get_price(p) for p in squad)))
             all_potential = find_best_trades(
                 squad=squad,
                 pool=df_pred,
                 current_round=rnd,
                 max_trades=remaining_trades_this_round + 1,
                 trades_remaining=TOTAL_TRADES - trades_used + 1,
+                salary_cap=effective_cap,
             )
             perm_trades = all_potential[:remaining_trades_this_round]
             best_rejected_value = (
