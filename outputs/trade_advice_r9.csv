@@ -1,0 +1,27 @@
+player_name,team,positions,price,predicted_points,is_starter,in_ideal_team,status
+"Grant, Harry",MEL,HOK,524800.0,60.447784423828125,True,False,consider_dropping
+"Ford, Jackson",NZL,FRF,784300.0,91.748779296875,True,False,consider_dropping
+"Hau, Arama",GCT,2RF|FRF,583400.0,68.87638092041016,True,True,keep
+"Wong, Siua",SYD,2RF,632300.0,71.28617858886719,True,False,consider_dropping
+"Cleary, Nathan",PTH,HFB,858300.0,89.13410186767578,True,False,consider_dropping
+"Munster, Cameron",MEL,5/8,498900.0,53.66953659057617,True,False,consider_dropping
+"Mitchell, Latrell",STH,CTW,961500.0,108.81981658935547,True,True,keep
+"Farnworth, Herbie",DOL,CTW,847900.0,91.8523178100586,True,False,consider_dropping
+"Jenkins, Thomas",PTH,CTW,809100.0,90.4481430053711,True,False,consider_dropping
+"Chester, Tom",NQC,CTW|FLB,549400.0,70.3101806640625,True,True,keep
+"Edwards, Dylan",PTH,FLB,771000.0,83.92765045166016,True,False,consider_dropping
+"Faeamani, Sialetili",GCT,CTW,411200.0,53.65321350097656,True,False,consider_dropping
+"Williams, Jack",PAR,2RF|FRF,572100.0,60.06725311279297,True,True,keep
+"Wakeham, Brandon",MNL,5/8|HFB,233800.0,28.295345306396484,True,True,keep
+"Young, Dominic",NEW,CTW,542300.0,63.048561096191406,True,False,consider_dropping
+"Manuleleua, Francis",NEW,2RF,241700.0,37.27013397216797,False,False,consider_dropping
+"Clarke, Cooper",MEL,FRF,400600.0,45.79447937011719,False,False,consider_dropping
+"Going, Kalani",PTH,2RF|HOK,201400.0,17.98275375366211,False,False,consider_dropping
+"Fineanganofo, John",DOL,5/8|HOK,201400.0,0.12138663232326508,False,False,consider_dropping
+"Harrison, Zane",GCT,HFB,201400.0,32.07269287109375,False,False,consider_dropping
+"Leo, Moses",MEL,CTW,294500.0,43.856483459472656,False,False,consider_dropping
+"Martin, Noah",CBR,2RF,484000.0,64.09691619873047,False,False,consider_dropping
+"Young, Hudson",CBR,2RF,776300.0,84.97869110107422,False,False,consider_dropping
+"Foley, Reece",SYD,5/8|2RF,201400.0,0.0796259418129921,False,False,consider_dropping
+"Tu, Setu",STG,CTW,470900.0,63.37425231933594,False,False,consider_dropping
+"Pasikala, Motu",NZL,FLB|CTW,201400.0,0.022756554186344147,False,False,consider_dropping
