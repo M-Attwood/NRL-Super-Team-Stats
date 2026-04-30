@@ -1,0 +1,262 @@
+round: 9
+description: |
+  Round 9 inputs. Dragons are on bye (no team list provided).
+  Squad change since round 8: Funa-Iuta OUT, Manuleleua IN
+  (executed the trade the advisor recommended in round 8).
+
+squad:
+  # Active scoring 13 + 4 bench + 1 flex + reserves (26 total)
+  - Harry Grant
+  - Jackson Ford
+  - Arama Hau
+  - Siua Wong
+  - Nathan Cleary
+  - Cameron Munster
+  - Latrell Mitchell
+  - Herbie Farnworth
+  - Thomas Jenkins
+  - Tom Chester
+  - Dylan Edwards
+  - Sialetili Faeamani
+  - Jack Williams
+  - Brandon Wakeham
+  - Dominic Young
+  - Francis Manuleleua
+  - Cooper Clarke
+  - Kalani Going
+  - John Fineanganofo
+  - Zane Harrison
+  - Moses Leo
+  # Out / not named — kept on the squad list (no trade made yet)
+  - Noah Martin           # Raiders, ankle surgery
+  - Hudson Young          # Raiders, not named
+  - Reece Foley           # Roosters, not named
+  - Setu Tu               # Dragons (bye)
+  - Motu Pasikala         # Warriors, not named
+
+starters:
+  # Bulldogs
+  - Connor Tracey
+  - Jonathan Sua
+  - Bronson Xerri
+  - Stephen Crichton
+  - Enari Tuala
+  - Matt Burton
+  - Lachlan Galvin
+  - Samuel Hughes
+  - Bailey Hayward
+  - Leo Thompson
+  - Sitili Tupouniua
+  - Jacob Preston
+  - Jaeman Salmon
+  # Cowboys
+  - Scott Drinkwater
+  - Braidon Burns
+  - Jaxon Purdue
+  - Tom Chester
+  - Zac Laybutt
+  - Jake Clifford
+  - Tom Dearden
+  - Coen Hess
+  - Reed Mahoney
+  - Jason Taumalolo
+  - Heilum Luki
+  - Jeremiah Nanai
+  - Reuben Cotter
+  # Dolphins
+  - Hamiso Tabuai-Fidow
+  - Jamayne Isaako
+  - Trai Fuller
+  - Herbie Farnworth
+  - Selwyn Cobbo
+  - Bradley Schneider
+  - Isaiya Katoa
+  - Tom Gilbert
+  - Max Plath
+  - Francis Molo
+  - Connelly Lemuelu
+  - Kulikefu Finefeuiaki
+  - Morgan Knowles
+  # Storm
+  - Sualauvi Faalogo
+  - Will Warbrick
+  - Jack Howarth
+  - Nick Meaney
+  - Hugo Peel
+  - Cameron Munster
+  - Tyran Wishart
+  - Stefano Utoikamanu
+  - Harry Grant
+  - Josh King
+  - Shawn Blore
+  - Ativalu Lisati
+  - Alec MacDonald
+  # Titans
+  - Keano Kini
+  - Sialetili Faeamani
+  - Jojo Fifita
+  - AJ Brimson
+  - Phillip Sami
+  - Lachlan Ilias
+  - Jayden Campbell
+  - Kurtis Morrin
+  - Sam Verrills
+  - Tino Fa'asuamaleaui
+  - Arama Hau
+  - Beau Fermor
+  - Chris Randall
+  # Raiders
+  - Kaeo Weekes
+  - Savelio Tamale
+  - Sebastian Kris
+  - Matthew Timoko
+  - Jed Stuart
+  - Ethan Strange
+  - Ethan Sanders
+  - Corey Horsburgh
+  - Tom Starling
+  - Joseph Tapine
+  - Ata Mariota
+  - Simi Sasagi
+  - Jayden Brailey
+  # Eels
+  - Joash Papalii
+  - Brian Kelly
+  - Will Penisini
+  - Sean Russell
+  - Josh Addo-Carr
+  - Ronald Volkman
+  - Mitchell Moses
+  - Luca Moretti
+  - Ryley Smith
+  - Junior Paulo
+  - Charlie Guymer
+  - Jack Williams
+  - Jack De Belin
+  # Warriors
+  - Taine Tuaupiki
+  - Dallin Watene-Zelezniak
+  - Roger Tuivasa-Sheck
+  - Adam Pompey
+  - Alofiana Khan-Pereira
+  - Chanel Harris-Tavita
+  - Tanah Boyd
+  - James Fisher-Harris
+  - Wayde Egan
+  - Jackson Ford
+  - Leka Halasima
+  - Kurt Capewell
+  - Erin Clark
+  # Roosters
+  - James Tedesco
+  - Daniel Tupou
+  - Hugo Savala
+  - Robert Toia
+  - Mark Nawaqanitawase
+  - Daly Cherry-Evans
+  - Sam Walker
+  - Naufahu Whyte
+  - Reece Robson
+  - Lindsay Collins
+  - Angus Crichton
+  - Siua Wong
+  - Victor Radley
+  # Broncos
+  - Reece Walsh
+  - Josiah Karapani
+  - Kotoni Staggs
+  - Gehamat Shibasaki
+  - Deine Mariner
+  - Ezra Mam
+  - Adam Reynolds
+  - Ben Talty
+  - Cory Paix
+  - Jack Gosiewski
+  - Xavier Willison
+  - Jordan Riki
+  - Patrick Carrigan
+  # Knights
+  - Kalyn Ponga
+  - Dominic Young
+  - Dane Gagai
+  - Bradman Best
+  - Greg Marzhew
+  - Fletcher Sharpe
+  - Dylan Brown
+  - Jacob Saifiti
+  - Phoenix Crossland
+  - Trey Mooney
+  - Dylan Lucas
+  - Jermaine McEwen
+  - Mat Croker
+  # Rabbitohs
+  - Matthew Dufty
+  - Alex Johnston
+  - Latrell Mitchell
+  - Jack Wighton
+  - Campbell Graham
+  - Cody Walker
+  - Jamie Humphreys
+  - Tevita Tatola
+  - Bronson Garlick
+  - Sean Keppie
+  - Keaon Koloamatangi
+  - Tallis Duncan
+  - Cameron Murray
+  # Sharks
+  - William Kennedy
+  - Mawene Hiroti
+  - Siosifa Talakai
+  - KL Iro
+  - Samuel Stonestreet
+  - Braydon Trindall
+  - Nicholas Hynes
+  - Addin Fonua-Blake
+  - Blayke Brailey
+  - Toby Rudolf
+  - Briton Nikora
+  - Teig Wilton
+  - Cameron McInnes
+  # Wests Tigers
+  - Sunia Turuva
+  - Jeral Skelton
+  - Taylan May
+  - Starford To'a
+  - Luke Laulilii
+  - Jarome Luai
+  - Adam Doueihi
+  - Terrell May
+  - Tristan Hope
+  - Fonua Pole
+  - Samuela Fainu
+  - Tony Sukkar
+  - Alex Twal
+  # Panthers
+  - Dylan Edwards
+  - Thomas Jenkins
+  - Paul Alamoti
+  - Casey McLean
+  - Brian To'o
+  - Blaize Talagi
+  - Nathan Cleary
+  - Moses Leota
+  - Freddy Lussick
+  - Lindsay Smith
+  - Isaiah Papali'i
+  - Luke Garner
+  - Isaah Yeo
+  # Sea Eagles
+  - Tolutau Koula
+  - Jason Saab
+  - Clayton Faulalo
+  - Reuben Garrick
+  - Lehi Hopoate
+  - Luke Brooks
+  - Jamal Fogarty
+  - Taniela Paseka
+  - Brandon Wakeham
+  - Kobe Hetherington
+  - Haumole Olakau'atu
+  - Ben Trbojevic
+  - Jake Trbojevic
+  # Dragons on bye for Round 9

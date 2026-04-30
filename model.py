@@ -28,10 +28,17 @@ POINTS_PER_DOLLAR = 1.0 / 10_000
 
 # ── NRL positions and teams for one-hot encoding ─────────────────────────────
 ALL_POSITIONS = ["HOK", "FRF", "2RF", "HFB", "5/8", "CTW", "FLB"]
-ALL_TEAMS = [
-    "BRI", "CBY", "CRO", "DOL", "EEL", "GLD", "HUR", "MAN",
-    "MEL", "NEW", "NQL", "PEN", "RDB", "SOU", "STI", "WST",
-]
+
+# The 17 club codes that actually appear in scraped data. The previous list
+# used internal-style codes ("BRI", "CBY", "EEL", ...) that didn't match the
+# scraper's output ("BRO", "BUL", "PAR", ...), which meant 13/17 team one-hots
+# were silently always zero. Now sourced from the canonical bye-round table in
+# planner.BYE_ROUNDS so the two stay in sync.
+def _canonical_team_codes() -> list[str]:
+    from planner import BYE_ROUNDS
+    return sorted(BYE_ROUNDS.keys())
+
+ALL_TEAMS = _canonical_team_codes()
 
 # Numeric columns to scale and feed into the model.
 #
@@ -66,6 +73,7 @@ SCALE_COLS = [
     "avg_r1_9", "avg_r10_18", "avg_r19_27",
     "avg_mins_last3", "avg_mins_last5",
     "form_momentum",
+    "is_rookie",
 ]
 
 # Target column (raw, unscaled — `_raw` variants are saved before scaling).
@@ -125,16 +133,36 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
         except (ValueError, TypeError, AttributeError) as e:
             log.debug("skipping numeric coercion for column %s: %s", col, e)
 
-    # Fill NaN with position-group median
+    # Fill NaN with year-aware position-group median.
+    #
+    # We group by (scrape_year, primary_position) so a 2024 NaN is filled
+    # using only 2024 medians — never with future-season data. Without this
+    # 2026 partial-season rows (still being scored) would leak forward-looking
+    # signal back into the older rows that the model trains on.
     primary_pos = df["positions"].str.split("|").str[0].fillna("UNK")
     df["_primary_pos"] = primary_pos
+    if "scrape_year" in df.columns:
+        df["_year_key"] = pd.to_numeric(df["scrape_year"], errors="coerce")
+        group_keys = ["_year_key", "_primary_pos"]
+    else:
+        group_keys = ["_primary_pos"]
 
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    # Don't impute the year column itself
+    numeric_cols = [c for c in numeric_cols if c != "_year_key"]
     for col in numeric_cols:
         if df[col].isna().any():
-            group_medians = df.groupby("_primary_pos")[col].transform("median")
+            group_medians = df.groupby(group_keys)[col].transform("median")
+            # Fall back to position-only median (same year unavailable),
+            # then global median, then zero.
+            pos_medians = df.groupby("_primary_pos")[col].transform("median")
             global_median = df[col].median()
-            df[col] = df[col].fillna(group_medians).fillna(global_median).fillna(0)
+            df[col] = (df[col]
+                       .fillna(group_medians)
+                       .fillna(pos_medians)
+                       .fillna(global_median)
+                       .fillna(0))
+    df = df.drop(columns=["_year_key"], errors="ignore")
 
     df = df.drop(columns=["_primary_pos"], errors="ignore")
 
@@ -167,6 +195,19 @@ def engineer_features(df: pd.DataFrame,
         df["form_momentum"] = df["avg_last3"].fillna(0) - df["avg_last5"].fillna(0)
     else:
         df["form_momentum"] = 0.0
+
+    # is_rookie: explicit signal so the model can learn how to extrapolate
+    # for players with no historical games_played. Previously these rows were
+    # silently filtered out before training — meaning the model never saw
+    # rookies and had to fall back to a post-hoc position-median patch at
+    # predict time. Keeping them in (with this flag set) lets the model
+    # learn an actual rookie distribution.
+    if "games_played" in df.columns:
+        df["is_rookie"] = (
+            pd.to_numeric(df["games_played"], errors="coerce").fillna(0) == 0
+        ).astype(float)
+    else:
+        df["is_rookie"] = 0.0
 
     # ── One-hot encode positions ──────────────────────────────────────────────
     for pos in ALL_POSITIONS:
@@ -250,16 +291,42 @@ def _load_scaler() -> StandardScaler | None:
     return None
 
 
-def get_feature_cols(df: pd.DataFrame = None) -> list[str]:
-    """Load saved feature column list, or derive from df."""
+def derive_feature_cols(df: pd.DataFrame) -> list[str]:
+    """Compute the feature column list directly from `df` and the global
+    SCALE_COLS / ALL_POSITIONS / ALL_TEAMS constants.
+
+    Use this during training/feature-engineering when you want changes to
+    SCALE_COLS or ALL_TEAMS to actually take effect. (The previous behaviour
+    of always reading the saved pickle first meant constant changes were
+    silently ignored until the pickle was deleted.)
+    """
+    pos_cols = [f"pos_{p.replace('/', '_').replace(' ', '_')}" for p in ALL_POSITIONS]
+    team_cols = [f"team_{t}" for t in ALL_TEAMS]
+    present = [c for c in SCALE_COLS if c in df.columns]
+    return present + pos_cols + team_cols
+
+
+def load_saved_feature_cols() -> list[str]:
+    """Read the feature column list saved alongside the trained model.
+    Returns [] if no model has been trained yet."""
     if FEATURE_COLS_PATH.exists():
         with open(FEATURE_COLS_PATH, "rb") as f:
             return pickle.load(f)
+    return []
+
+
+def get_feature_cols(df: pd.DataFrame = None) -> list[str]:
+    """Backwards-compatible wrapper. Returns the saved list if it exists
+    (the right call at *inference* time, where features must match what
+    the saved model was trained on); otherwise derives from `df`.
+
+    For training/feature-engineering callers, prefer `derive_feature_cols`
+    so that SCALE_COLS edits propagate immediately."""
+    saved = load_saved_feature_cols()
+    if saved:
+        return saved
     if df is not None:
-        pos_cols = [f"pos_{p.replace('/', '_').replace(' ', '_')}" for p in ALL_POSITIONS]
-        team_cols = [f"team_{t}" for t in ALL_TEAMS]
-        present = [c for c in SCALE_COLS if c in df.columns]
-        return present + pos_cols + team_cols
+        return derive_feature_cols(df)
     return []
 
 
@@ -309,7 +376,10 @@ def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False,
     import tensorflow as tf
     from tensorflow import keras
 
-    feature_cols = get_feature_cols(df)
+    # Training: always derive from `df` so SCALE_COLS / ALL_TEAMS edits
+    # take effect immediately. Previously read the saved pickle first,
+    # which meant constant changes were silently ignored.
+    feature_cols = derive_feature_cols(df)
     if not feature_cols:
         raise ValueError("No feature columns found. Run engineer_features first.")
 
@@ -341,12 +411,12 @@ def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False,
         y_full = y_absolute
         log.info("Training with ABSOLUTE target (avg_points)")
 
-    # Remove rows where the absolute score is 0 (players with no history).
-    # We filter on y_absolute, not y_full — for the delta target a delta of
-    # 0 is a perfectly valid sample.
-    mask = y_absolute > 0
-    X_full = X_full[mask]
-    y_full = y_full[mask]
+    # Keep all rows (including y==0 rookies) so the model learns the
+    # cold-start tail. The previous behaviour silently filtered out every
+    # player with no games — exactly the population we most need predictions
+    # for. The `is_rookie` feature added in engineer_features lets the model
+    # condition on this.
+    mask = np.ones(len(y_absolute), dtype=bool)
 
     if len(X_full) < 20:
         log.warning("Not enough training samples (%d) — skipping model training",
@@ -398,10 +468,34 @@ def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False,
 
     if MODEL_PATH.exists() and not force_retrain:
         log.info("Loading existing model from %s for fine-tuning ...", MODEL_PATH)
-        model = keras.models.load_model(MODEL_PATH)
-        # Lower learning rate for fine-tuning (Keras 3 compatible)
-        model.optimizer.learning_rate = 0.0001
-        epochs = 20
+        candidate = keras.models.load_model(MODEL_PATH)
+        # Schema guard: if SCALE_COLS or ALL_TEAMS changed since the model
+        # was saved, the input dim won't match. Rather than crash mid-fit,
+        # detect it and retrain from scratch.
+        try:
+            saved_n = candidate.input_shape[1]
+        except (AttributeError, IndexError, TypeError):
+            saved_n = None
+        if saved_n is not None and saved_n != n_features:
+            log.warning(
+                "Saved model expects %d features but data now has %d — "
+                "feature schema changed, retraining from scratch.",
+                saved_n, n_features,
+            )
+            model = _build_model(n_features)
+            epochs = 100
+        else:
+            # Recompile with a lower LR for fine-tuning. Recompiling (rather
+            # than mutating optimizer.learning_rate) resets Adam's internal
+            # moment estimates, which is the right move when the data
+            # distribution may have shifted week-to-week.
+            model = candidate
+            model.compile(
+                optimizer=keras.optimizers.Adam(learning_rate=0.0001),
+                loss=keras.losses.Huber(delta=1.0),
+                metrics=["mae"],
+            )
+            epochs = 20
     else:
         log.info("Training model from scratch (%d features, %d samples) ...",
                  n_features, len(X_train))
