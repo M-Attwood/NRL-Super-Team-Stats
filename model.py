@@ -520,7 +520,42 @@ def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False,
     mae = mean_absolute_error(y_val, y_pred)
     log.info("Validation  RMSE: %.2f  MAE: %.2f", rmse, mae)
 
+    # Persist metrics so we can track whether changes are actually helping.
+    # Console-only metrics vanish; an append-only CSV gives a sparkline of
+    # model performance run-to-run that you can plot or eyeball.
+    _append_metrics_row(
+        rmse=float(rmse), mae=float(mae),
+        holdout_year=holdout_year,
+        n_train=int(len(X_train)), n_val=int(len(X_val)),
+        n_features=int(n_features),
+        target_kind=("delta" if (USE_DELTA_TARGET
+                                  and "avg_last3_raw" in df.columns) else "absolute"),
+        max_epochs=int(epochs),
+    )
+
     return model
+
+
+# ── Metric tracking ──────────────────────────────────────────────────────────
+
+METRICS_PATH = Path("outputs") / "model_metrics.csv"
+
+
+def _append_metrics_row(**fields) -> None:
+    """Append one row to outputs/model_metrics.csv (creates file + header
+    on first run). Failure here must never break a training run, so all
+    I/O errors are swallowed with a warning."""
+    from datetime import datetime
+    row = {"timestamp": datetime.now().isoformat(timespec="seconds"), **fields}
+    try:
+        METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not METRICS_PATH.exists()
+        pd.DataFrame([row]).to_csv(
+            METRICS_PATH, mode="a", header=write_header, index=False,
+        )
+        log.info("Metrics appended → %s", METRICS_PATH)
+    except OSError as e:
+        log.warning("Could not write %s: %s", METRICS_PATH, e)
 
 
 # ── Opponent strength (NN-4) ──────────────────────────────────────────────────
