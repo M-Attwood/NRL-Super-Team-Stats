@@ -244,6 +244,10 @@ def main():
                         help="Run season-long bye round planner after optimizer")
     parser.add_argument("--plan-from-round", type=int, default=1,
                         help="Start season plan from this round (default: 1)")
+    parser.add_argument("--use-squad-state", action="store_true",
+                        help="Seed planner from data/inputs/round_{N}.yaml "
+                             "(actual squad + trades remaining) instead of "
+                             "building a fresh ideal squad.")
     parser.add_argument("--data", default=None,
                         help="CSV to use when --no-scrape is set "
                              "(default: most recent in data/raw/)")
@@ -305,7 +309,27 @@ def main():
     if args.plan:
         from planner import run_season_plan, print_season_summary, export_season_plan
         log.info("── Step 7: Running season-long bye round planner ──")
-        season_state = run_season_plan(df_pred, start_round=args.plan_from_round)
+
+        squad_state = None
+        origin_wl = None
+        if args.use_squad_state:
+            from squad_state import load_state, load_origin_watchlist
+            try:
+                squad_state = load_state(round_num, df_pred)
+                log.info("Squad state loaded: R%d, %d players, %d trades left",
+                         squad_state["current_round"], len(squad_state["squad"]),
+                         squad_state["trades_remaining"])
+            except Exception as e:
+                log.error("Failed to load squad state for R%d: %s", round_num, e)
+                log.error("Falling back to fresh-squad planner.")
+            origin_wl = load_origin_watchlist()
+
+        season_state = run_season_plan(
+            df_pred,
+            start_round=args.plan_from_round,
+            squad_state=squad_state,
+            origin_watchlist=origin_wl,
+        )
         print_season_summary(season_state)
         export_season_plan(season_state)
         log.info("Season plan complete.")

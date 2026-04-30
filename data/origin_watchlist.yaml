@@ -1,0 +1,44 @@
+# State of Origin watchlist.
+#
+# Surfaces likely Origin players in the trade advisor / bye planner output.
+# Pure flagging — neither tool drops these players from lineups, it only
+# warns you so you can decide whether to trade them out.
+#
+# Update before each Origin team announcement (or proactively with squad
+# guesses). Names match either "Lastname, Firstname" or "Firstname Lastname".
+#
+# 2026 Origin rounds (CONFIRM with NRL fixture before relying on these):
+origin_rounds:
+  - 14
+  - 17
+  - 19
+
+# Players → state. Add/remove as squads are announced.
+likely_origin:
+  # NSW
+  "Cleary, Nathan": NSW
+  "Yeo, Isaah": NSW
+  "Mitchell, Latrell": NSW
+  "Edwards, Dylan": NSW
+  "Tedesco, James": NSW
+  "Crichton, Stephen": NSW
+  "Crichton, Angus": NSW
+  "Murray, Cameron": NSW
+  "Walker, Sam": NSW
+  "Trbojevic, Jake": NSW
+  "Too, Brian": NSW
+  "Moses, Mitchell": NSW
+
+  # QLD
+  "Munster, Cameron": QLD
+  "Walsh, Reece": QLD
+  "Grant, Harry": QLD
+  "Cherry-Evans, Daly": QLD
+  "Carrigan, Patrick": QLD
+  "Tabuai-Fidow, Hamiso": QLD
+  "Cobbo, Selwyn": QLD
+  "Dearden, Tom": QLD
+  "Faasuamaleaui, Tino": QLD
+  "Staggs, Kotoni": QLD
+  "Ponga, Kalyn": QLD
+  "Fa'asuamaleaui, Tino": QLD

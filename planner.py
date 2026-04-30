@@ -21,6 +21,7 @@ from optimizer import (
     POSITION_QUOTAS, ACTIVE_QUOTAS, STARTING_SLOTS, BENCH_SLOTS,
     _eligible_positions,
 )
+from squad_state import origin_risk
 
 log = logging.getLogger(__name__)
 
@@ -477,45 +478,72 @@ def allocate_boosts(round_results: list[dict], boosts_remaining: int) -> dict[in
 # ── Main season simulation ───────────────────────────────────────────────────
 
 def run_season_plan(df_pred: pd.DataFrame,
-                     start_round: int = 1) -> dict:
+                     start_round: int = 1,
+                     squad_state: dict | None = None,
+                     origin_watchlist: dict | None = None) -> dict:
     """
-    Simulate the full season and produce a trade plan.
+    Simulate the rest of the season and produce a trade plan.
+
+    If `squad_state` is provided (from squad_state.load_state), the
+    simulation seeds from the user's actual current squad and remaining
+    trades, and starts from `squad_state["current_round"]`. Otherwise it
+    falls back to the legacy "build a fresh ideal squad" path.
 
     Returns dict with:
-        round_results: list of per-round dicts
-        trade_log: list of all trades
-        total_projected: total season scoring points
-        initial_squad: the starting 26
-        boosts_used: {round: count}
+        round_results, trade_log, total_projected, initial_squad,
+        boosts_used, trades_used.
     """
+    if origin_watchlist is None:
+        origin_watchlist = {"origin_rounds": set(), "likely_origin": {}}
+
+    if squad_state is not None:
+        start_round = int(squad_state.get("current_round", start_round))
+
     log.info("=" * 60)
     log.info("  SEASON BYE ROUND PLANNER — Rounds %d to %d", start_round, TOTAL_ROUNDS)
     log.info("=" * 60)
 
-    # ── Step 1: Season-adjusted initial squad ────────────────────────────────
-    log.info("Selecting bye-adjusted initial squad ...")
-    result = select_initial_squad(df_pred, start_round=start_round)
+    if squad_state is not None:
+        log.info("Seeding from user squad state (R%d, %d trades remaining).",
+                 start_round, squad_state.get("trades_remaining", TOTAL_TRADES))
+        squad = [dict(p) for p in squad_state["squad"]]
+        if len(squad) < SQUAD_SIZE:
+            log.warning("Squad has only %d players — planner expects %d.",
+                        len(squad), SQUAD_SIZE)
+        # Sanity-check positions: the LP needs HOK/FRF/2RF/HFB/5/8/CTW/FLB
+        # quotas plus 1 FLEX to be fillable. A YAML missing (say) a hooker
+        # would silently produce nonsense lineups otherwise.
+        if not validate_position_quotas(squad):
+            log.error("Seeded squad fails position quotas — check the YAML "
+                      "(need HOK:2 FRF:4 2RF:6 HFB:2 5/8:2 CTW:7 FLB:2 +1 FLEX).")
+            return {"round_results": [], "trade_log": [], "total_projected": 0.0}
+        trades_used_init = max(0, TOTAL_TRADES - int(squad_state.get(
+            "trades_remaining", TOTAL_TRADES)))
+    else:
+        # ── Legacy: season-adjusted initial squad ────────────────────────────
+        log.info("Selecting bye-adjusted initial squad ...")
+        result = select_initial_squad(df_pred, start_round=start_round)
 
-    if result.get("solver_status") != "Optimal":
-        log.error("Failed to select initial squad: %s", result.get("solver_status"))
-        return {"round_results": [], "trade_log": [], "total_projected": 0.0}
+        if result.get("solver_status") != "Optimal":
+            log.error("Failed to select initial squad: %s",
+                      result.get("solver_status"))
+            return {"round_results": [], "trade_log": [], "total_projected": 0.0}
 
-    # Flatten squad into list of dicts with original (unadjusted) predicted_points
-    squad = []
-    for group in ["starting_13", "bench_4", "flex_1", "reserves_8"]:
-        for p in result.get(group, []):
-            # Restore original predicted_points from df_pred
-            name = p["player_name"]
-            orig_row = df_pred[df_pred["player_name"] == name]
-            if not orig_row.empty:
-                p["predicted_points"] = float(orig_row.iloc[0]["predicted_points"])
-            squad.append(p)
+        squad = []
+        for group in ["starting_13", "bench_4", "flex_1", "reserves_8"]:
+            for p in result.get(group, []):
+                name = p["player_name"]
+                orig_row = df_pred[df_pred["player_name"] == name]
+                if not orig_row.empty:
+                    p["predicted_points"] = float(orig_row.iloc[0]["predicted_points"])
+                squad.append(p)
+        trades_used_init = 0
 
     log.info("Initial squad: %d players, $%s",
              len(squad), f"{sum(_get_price(p) for p in squad):,.0f}")
 
     # ── Step 2: Round-by-round simulation ────────────────────────────────────
-    trades_used = 0
+    trades_used = trades_used_init
     total_projected = 0.0
     round_results = []
     trade_log = []
@@ -706,6 +734,17 @@ def run_season_plan(df_pred: pd.DataFrame,
                  "Trades: %d | Left: %d",
                  rnd, bye_str, len(unavailable), round_points,
                  len(trades_made), TOTAL_TRADES - trades_used)
+
+        # Origin-risk flag: warn-only, never drops the player from lineups.
+        if rnd in origin_watchlist.get("origin_rounds", set()):
+            origin_hits = []
+            for p in squad:
+                state = origin_risk(p["player_name"], rnd, origin_watchlist)
+                if state:
+                    origin_hits.append((p["player_name"], state))
+            for name, state in origin_hits:
+                log.warning("    R%02d ORIGIN RISK: %s (%s) — verify availability",
+                            rnd, name, state)
 
     # ── Step 3: Allocate trade boosts (post-simulation) ──────────────────────
     boosts = allocate_boosts(round_results, TRADE_BOOSTS)

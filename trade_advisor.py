@@ -749,32 +749,66 @@ def compare_squads(ideal_squad: list[dict], current_squad: list[dict],
     }
 
 
+def _horizon_gain(p_in: dict, p_out: dict, round_num: int,
+                  horizon: int = 3) -> tuple[float, list[float]]:
+    """
+    Net point gain over the next `horizon` rounds (round_num inclusive).
+
+    A player contributes their predicted_points each round they're
+    available (not on bye, not injured per planner.INJURED_PLAYERS).
+    Returns (total_gain, per_round_breakdown).
+    """
+    from planner import is_available, TOTAL_ROUNDS
+
+    in_pts = p_in.get("predicted_points", 0)
+    out_pts = p_out.get("predicted_points", 0)
+    in_team = p_in.get("team", "")
+    out_team = p_out.get("team", "")
+    in_name = p_in["player_name"]
+    out_name = p_out["player_name"]
+
+    breakdown = []
+    total = 0.0
+    for r in range(round_num, min(round_num + horizon, TOTAL_ROUNDS + 1)):
+        in_score = in_pts if is_available(in_name, in_team, r) else 0.0
+        out_score = out_pts if is_available(out_name, out_team, r) else 0.0
+        delta = in_score - out_score
+        breakdown.append(delta)
+        total += delta
+    return total, breakdown
+
+
 def recommend_trades(current_squad: list[dict],
                      comparison: dict,
                      confirmed_starters: set[str],
                      pool: pd.DataFrame,
                      max_trades: int = 2,
                      round_num: int = 0,
-                     salary_cap: int | None = None) -> list[dict]:
+                     salary_cap: int | None = None,
+                     trades_remaining: int | None = None,
+                     origin_watchlist: dict | None = None) -> list[dict]:
     """
     Find the best trades to move current squad toward ideal.
 
-    Priority for OUT:
-      1. Genuine non-starters (not playing AND not on bye) — score 0 this round
-      2. Bye players and poor performers — ranked by predicted_points ascending
-         (bye players use their real predicted_points, not 0, so they only
-          surface if they are genuinely bad long-term options)
-
-    Priority for IN:
-      1. Highest value from ideal team not in current
-      2. Must be a confirmed starter
+    Sorting: each (out, in) candidate gets a 3-round horizon score
+    (sum of predicted_points × availability over the next 3 rounds);
+    options are ranked by horizon gain, ties broken by immediate gain.
+    Each option is also tagged with Origin-risk (informational) and a
+    bye-cover flag when the OUT player is on bye now or next round.
 
     Constraints: salary cap, position quotas.
     """
     from optimizer import SALARY_CAP, _eligible_positions
-    from planner import validate_position_quotas
+    from planner import (validate_position_quotas, BIG_BYE_ROUNDS,
+                          is_on_bye, TOTAL_TRADES)
+    from squad_state import origin_risk as _origin_risk
+
+    if trades_remaining is None:
+        trades_remaining = TOTAL_TRADES
 
     cap = salary_cap if salary_cap is not None else SALARY_CAP
+    if origin_watchlist is None:
+        origin_watchlist = {"origin_rounds": set(), "likely_origin": {}}
 
     non_starters = comparison["non_starters"]
     to_drop = comparison["players_to_drop"]
@@ -857,20 +891,70 @@ def recommend_trades(current_squad: list[dict],
                 continue
 
             immediate_gain = in_pts - out_effective
+            horizon_total, horizon_breakdown = _horizon_gain(
+                p_in, p_out, max(1, round_num), horizon=3
+            )
+
+            # Origin-risk flags. Scan ALL configured Origin rounds, not
+            # just the 3-round horizon — Origin window (R14/17/19) is wider
+            # than the trade-evaluation window, and the user wants to know
+            # about R17 risk even if they're trading at R14.
+            in_origin = None
+            out_origin = None
+            for r in sorted(origin_watchlist.get("origin_rounds", set())):
+                if r < max(1, round_num):
+                    continue
+                if in_origin is None:
+                    in_origin = _origin_risk(p_in["player_name"], r,
+                                              origin_watchlist)
+                if out_origin is None:
+                    out_origin = _origin_risk(p_out["player_name"], r,
+                                               origin_watchlist)
+                if in_origin and out_origin:
+                    break
+
+            # Bye-cover flag: OUT is on bye now (or next round if next is a
+            # big-bye), IN is not. This is a single trade, not a loop —
+            # there's no scheduled trade-back. The label is purely
+            # informational so the user can spot bye-driven opportunities.
+            bye_cover = False
+            cover_round = None
+            if round_num and round_num in BIG_BYE_ROUNDS:
+                if on_bye and not is_on_bye(p_in.get("team", ""), round_num):
+                    bye_cover = True
+                    cover_round = round_num
+            elif round_num:
+                next_r = round_num + 1
+                if (next_r in BIG_BYE_ROUNDS
+                        and is_on_bye(p_out.get("team", ""), next_r)
+                        and not is_on_bye(p_in.get("team", ""), next_r)):
+                    bye_cover = True
+                    cover_round = next_r
+
             trade_options.append({
                 "out": p_out,
                 "in": p_in,
                 "out_reason": out_reason,
                 "immediate_gain": immediate_gain,
+                "horizon_gain": horizon_total,
+                "horizon_breakdown": horizon_breakdown,
                 "salary_delta": in_price - out_price,
                 "new_salary": new_salary,
                 "in_ideal": p_in["player_name"] in {
                     p["player_name"] for p in comparison["players_to_add"]
                 },
+                "in_origin": in_origin,
+                "out_origin": out_origin,
+                "bye_cover": bye_cover,
+                "bye_cover_round": cover_round if bye_cover else None,
             })
 
-    # Sort: prioritize immediate gain (non-starters OUT = big gain)
-    trade_options.sort(key=lambda t: t["immediate_gain"], reverse=True)
+    # Sort by 3-round horizon gain — incorporates byes/injuries naturally.
+    # Ties broken by immediate gain (prefer trades that pay off this round).
+    trade_options.sort(
+        key=lambda t: (t["horizon_gain"], t["immediate_gain"]),
+        reverse=True,
+    )
 
     # Greedily select top trades, validating quotas
     selected = []
@@ -1082,14 +1166,29 @@ def print_report(current_squad: list[dict], ideal_squad: list[dict],
 
             out_reason = t.get("out_reason", "")
             ideal_tag = "  [IN IDEAL TEAM]" if t["in_ideal"] else ""
+            loop_tag = (f"  [bye cover for R{t['bye_cover_round']}]"
+                        if t.get("bye_cover") else "")
+            in_origin_tag = (f"  [!Origin {t['in_origin']}]"
+                             if t.get("in_origin") else "")
+            out_origin_tag = (f"  [!Origin {t['out_origin']}]"
+                              if t.get("out_origin") else "")
 
-            print(f"\n    Trade {i}:  [{out_reason}]")
+            print(f"\n    Trade {i}:  [{out_reason}]{loop_tag}")
             print(f"      OUT: {out_name:<28s} ({out_pos}, {out_team})"
-                  f"  ${out_price:.0f}K  |  avg {out_avg:.1f}  pred {out_pred:.1f}")
+                  f"  ${out_price:.0f}K  |  avg {out_avg:.1f}  pred {out_pred:.1f}"
+                  f"{out_origin_tag}")
             print(f"      IN:  {in_name:<28s} ({in_pos}, {in_team})"
                   f"  ${in_price:.0f}K  |  avg {in_avg:.1f}  pred {in_pred:.1f}"
-                  f"{ideal_tag}")
-            print(f"      Point gain: +{t['immediate_gain']:.1f}  |  Cap: {cap_str}")
+                  f"{ideal_tag}{in_origin_tag}")
+            horizon_str = ""
+            if t.get("horizon_breakdown"):
+                horizon_str = (
+                    " | 3rd-horizon: "
+                    + " ".join(f"{d:+.0f}" for d in t["horizon_breakdown"])
+                    + f" = {t.get('horizon_gain', 0):+.1f}"
+                )
+            print(f"      Point gain: +{t['immediate_gain']:.1f}{horizon_str}"
+                  f"  |  Cap: {cap_str}")
 
         # Post-trade summary
         final_salary = current_salary
@@ -1488,6 +1587,22 @@ def run_advisor(round_num: int = None, no_scrape: bool = False,
 
     # Step 6: Find best trades
     log.info("Evaluating trades ...")
+    from squad_state import load_origin_watchlist, load_state
+    from planner import TOTAL_TRADES
+    origin_wl = load_origin_watchlist()
+    # trades_remaining: if the round YAML supplied it, use that; otherwise
+    # assume the average of two trades used per past round.
+    try:
+        _state_for_trades = load_state(round_num, df_pred)
+        trades_remaining = _state_for_trades.get("trades_remaining",
+                                                  TOTAL_TRADES)
+    except Exception as e:
+        log.warning(
+            "Could not read trades_remaining from round YAML (%s) — "
+            "estimating as TOTAL_TRADES - 2*(round-1).", e,
+        )
+        trades_remaining = max(0, TOTAL_TRADES - max(0, round_num - 1) * 2)
+
     trades = recommend_trades(
         current_squad=current_squad,
         comparison=comparison,
@@ -1496,6 +1611,8 @@ def run_advisor(round_num: int = None, no_scrape: bool = False,
         max_trades=max_trades,
         round_num=round_num,
         salary_cap=effective_cap,
+        trades_remaining=trades_remaining,
+        origin_watchlist=origin_wl,
     )
 
     # Step 7: Output
