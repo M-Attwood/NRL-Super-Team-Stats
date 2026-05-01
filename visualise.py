@@ -28,6 +28,7 @@ from model import (
     clean_data, engineer_features, get_feature_cols,
     build_prediction_features, predict_next_round_scores,
     MODEL_PATH, SCALER_PATH,
+    USE_DELTA_TARGET, HOLDOUT_YEAR_OFFSET,
 )
 from planner import BYE_ROUNDS, ROUND_BYES, BIG_BYE_ROUNDS, TOTAL_ROUNDS
 
@@ -55,7 +56,15 @@ def _load_model():
 
 
 def _prepare_data():
-    """Load master data, engineer features, split into train/val."""
+    """Load master data, engineer features, split into train/val.
+
+    Uses the same year-aware holdout that load_or_train_model uses (NN-1):
+    the most recent year is the validation set, everything older is training.
+    Previously this used a random 15% split with random_state=42, which (a)
+    leaked the same player into both train and val and (b) didn't match the
+    split the saved model was actually evaluated on — so the metrics on the
+    chart were measuring the wrong thing.
+    """
     from paths import MASTER_HISTORICAL_CSV
     df_all = pd.read_csv(MASTER_HISTORICAL_CSV, low_memory=False)
     df_clean = clean_data(df_all)
@@ -68,19 +77,62 @@ def _prepare_data():
     y = df_feat[target_col].fillna(0).values.astype(np.float32)
     mask = y > 0
 
-    df_valid = df_feat[mask].copy()
+    df_valid = df_feat[mask].copy().reset_index(drop=True)
     X = df_valid[feature_cols].fillna(0).values.astype(np.float32)
     y = y[mask]
 
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.15, random_state=42
-    )
-    idx_train, idx_val = train_test_split(
-        df_valid.index.values, test_size=0.15, random_state=42
-    )
-    df_val = df_valid.loc[idx_val].copy()
+    # Year-aware split, mirroring load_or_train_model.
+    if "scrape_year" in df_valid.columns:
+        years = pd.to_numeric(df_valid["scrape_year"], errors="coerce").values
+        finite = years[~np.isnan(years)]
+        max_year = int(np.nanmax(years)) if finite.size else None
+        holdout_year = (
+            max_year - (HOLDOUT_YEAR_OFFSET - 1) if max_year is not None else None
+        )
+        train_idx = years < holdout_year if holdout_year is not None else None
+        val_idx = years == holdout_year if holdout_year is not None else None
+
+        if (
+            holdout_year is not None
+            and train_idx.sum() >= 20
+            and val_idx.sum() >= 5
+        ):
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+            df_val = df_valid.iloc[val_idx].copy()
+            log.info("Year-aware val split: train<%d (%d) vs val=%d (%d)",
+                     holdout_year, int(train_idx.sum()),
+                     holdout_year, int(val_idx.sum()))
+            return df_feat, df_val, X_train, X_val, y_train, y_val, feature_cols
+
+        log.warning("Year-aware split insufficient (train=%s val=%s) — random fallback",
+                    None if train_idx is None else int(train_idx.sum()),
+                    None if val_idx is None else int(val_idx.sum()))
+
+    # Fallback: random split (small datasets / no scrape_year column).
+    idx = np.arange(len(df_valid))
+    idx_train, idx_val = train_test_split(idx, test_size=0.15, random_state=42)
+    X_train, X_val = X[idx_train], X[idx_val]
+    y_train, y_val = y[idx_train], y[idx_val]
+    df_val = df_valid.iloc[idx_val].copy()
 
     return df_feat, df_val, X_train, X_val, y_train, y_val, feature_cols
+
+
+def _val_predictions(model, X_val, df_val):
+    """Run the model on X_val and return predictions in the same units as
+    y_val (absolute avg_points). When the model was trained against the delta
+    target (USE_DELTA_TARGET), the rolling-3 baseline is added back here so
+    we're not comparing deltas to absolute scores. This mirrors what
+    predict_next_round_scores does at inference time."""
+    preds = model.predict(X_val, verbose=0).flatten()
+    if USE_DELTA_TARGET and "avg_last3_raw" in df_val.columns:
+        baseline = (
+            pd.to_numeric(df_val["avg_last3_raw"], errors="coerce")
+            .fillna(0).values.astype(np.float32)
+        )
+        preds = preds + baseline
+    return preds
 
 
 def _get_predictions(df_feat, df_pred=None):
@@ -107,7 +159,7 @@ def _get_predictions(df_feat, df_pred=None):
 
 def plot_actual_vs_predicted(ax, model, X_val, y_val, df_val):
     """Chart 1: Actual vs Predicted scatter."""
-    preds = model.predict(X_val, verbose=0).flatten()
+    preds = _val_predictions(model, X_val, df_val)
 
     primary_pos = df_val["positions"].str.split("|").str[0].fillna("UNK")
     colours = sns.color_palette("husl", len(POSITION_ORDER))
@@ -144,9 +196,9 @@ def plot_actual_vs_predicted(ax, model, X_val, y_val, df_val):
     ax.set_ylim(mn, mx)
 
 
-def plot_residuals(ax, model, X_val, y_val):
+def plot_residuals(ax, model, X_val, y_val, df_val):
     """Chart 2: Residual distribution."""
-    preds = model.predict(X_val, verbose=0).flatten()
+    preds = _val_predictions(model, X_val, df_val)
     residuals = preds - y_val
 
     ax.hist(residuals, bins=30, color="#3498db", edgecolor="white", alpha=0.8)
@@ -171,7 +223,7 @@ def plot_residuals(ax, model, X_val, y_val):
 
 def plot_per_position_error(ax, model, X_val, y_val, df_val):
     """Chart 3: Per-position MAE and RMSE."""
-    preds = model.predict(X_val, verbose=0).flatten()
+    preds = _val_predictions(model, X_val, df_val)
     primary_pos = df_val["positions"].str.split("|").str[0].fillna("UNK").values
 
     positions_present = []
@@ -213,7 +265,7 @@ def plot_per_position_error(ax, model, X_val, y_val, df_val):
 
 def plot_error_by_price_tier(ax, model, X_val, y_val, df_val):
     """Chart 4: Prediction error by price tier."""
-    preds = model.predict(X_val, verbose=0).flatten()
+    preds = _val_predictions(model, X_val, df_val)
 
     if "price_usd" in df_val.columns:
         prices = df_val["price_usd"].values
@@ -1009,7 +1061,7 @@ def run_visualisation(df_feat=None, df_pred=None, round_num=1, season_state=None
     plot_actual_vs_predicted(axes[0, 0], model, X_val, y_val, df_val)
 
     log.info("Chart 2/8: Residuals ...")
-    plot_residuals(axes[0, 1], model, X_val, y_val)
+    plot_residuals(axes[0, 1], model, X_val, y_val, df_val)
 
     log.info("Chart 3/8: Per-position error ...")
     plot_per_position_error(axes[1, 0], model, X_val, y_val, df_val)

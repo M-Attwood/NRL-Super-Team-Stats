@@ -198,7 +198,9 @@ def run_model(df_feat: pd.DataFrame, retrain: bool,
 
 
 def run_predictions(df_feat: pd.DataFrame,
-                    df_historical: pd.DataFrame = None) -> pd.DataFrame:
+                    df_historical: pd.DataFrame = None,
+                    fixtures: pd.DataFrame | None = None,
+                    current_round: int | None = None) -> pd.DataFrame:
     from model import predict_next_round_scores
     log.info("── Step 5: Predicting next-round scores ──")
     # Filter df_feat to the current season (2026) players only for the final output
@@ -206,8 +208,26 @@ def run_predictions(df_feat: pd.DataFrame,
         df_2026_feat = df_feat[df_feat["scrape_year"] == 2026].copy()
     else:
         df_2026_feat = df_feat.copy()
-    df_pred = predict_next_round_scores(df_2026_feat, df_historical=df_historical)
+    df_pred = predict_next_round_scores(
+        df_2026_feat, df_historical=df_historical,
+        fixtures=fixtures, current_round=current_round,
+    )
     return df_pred
+
+
+def load_fixtures(year: int, no_scrape: bool) -> pd.DataFrame:
+    """Load this season's fixtures from disk; scrape if missing.
+
+    Returns an empty DataFrame if neither path produces data — the model
+    degrades gracefully (def_ppm_conceded falls back to last-played
+    opponent / league mean).
+    """
+    from scraper import scrape_fixtures
+    try:
+        return scrape_fixtures(year=year, save=not no_scrape)
+    except (RuntimeError, OSError) as e:
+        log.warning("Fixture load failed: %s — continuing without fixtures.", e)
+        return pd.DataFrame()
 
 
 def run_optimizer(df_pred: pd.DataFrame, round_num: int) -> dict:
@@ -290,10 +310,17 @@ def main():
     # ── Step 4: Train model on 2024+2025 rows (avg_points > 0) ───────────────
     run_model(df_feat, retrain=args.retrain, holdout_year=args.holdout_year)
 
+    # ── Step 4b: Load fixtures (best-effort) for next-opponent feature ───────
+    # build_prediction_features uses these to overlay vs_team with the
+    # round-N opponent so def_ppm_conceded reflects the upcoming matchup
+    # instead of whatever historical opponent the row carried.
+    fixtures = load_fixtures(args.year, no_scrape=args.no_scrape)
+
     # ── Step 5: Predict 2026 scores using historical feature lookup ───────────
     # Pass the raw historical data (before feature engineering) so that
     # build_prediction_features can join 2025/2024 stats to 2026 players.
-    df_pred = run_predictions(df_feat, df_historical=df_hist_raw)
+    df_pred = run_predictions(df_feat, df_historical=df_hist_raw,
+                              fixtures=fixtures, current_round=round_num)
 
     # ── Step 6: Optimise and output ───────────────────────────────────────────
     result = run_optimizer(df_pred, round_num)

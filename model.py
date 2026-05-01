@@ -40,6 +40,98 @@ def _canonical_team_codes() -> list[str]:
 
 ALL_TEAMS = _canonical_team_codes()
 
+
+# ── Position-vs-team defensive strength loader ───────────────────────────────
+#
+# The scraper writes data/raw/position_vs_team_<year>.csv, which has two
+# sections: ranks (1..17) and PPM (points-per-minute) conceded — both keyed
+# by (team, position). We parse the second (PPM) section into a lookup that
+# the feature builder uses to produce `def_ppm_conceded`.
+#
+# Cached in module state so we don't re-parse the CSV on every prediction call.
+_DEF_TABLE_CACHE: dict[int | None, dict[tuple[str, str], float]] = {}
+
+
+def _parse_position_vs_team_csv(path) -> dict[tuple[str, str], float]:
+    """Parse the 'BY PPM CONCEDED' section of a position_vs_team CSV.
+
+    Returns a dict keyed by (team_code, position_name). Position names are
+    HOK, FRF, 2RF, HFB, 5/8, CTW, FLB. Team codes match planner.BYE_ROUNDS
+    ("BRO", "BUL", ...). Returns {} on parse failure.
+    """
+    import csv
+    from pathlib import Path as _Path
+    table: dict[tuple[str, str], float] = {}
+    p = _Path(path)
+    if not p.exists():
+        return table
+    in_ppm = False
+    columns: list[str] | None = None
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for row in csv.reader(f):
+                if not row:
+                    continue
+                first = (row[0] or "").strip()
+                if "BY PPM CONCEDED" in first:
+                    in_ppm = True
+                    columns = None
+                    continue
+                if not in_ppm:
+                    continue
+                # Header row beneath the section marker: ",HOK,FRF,2RF,..."
+                if first == "" and len(row) > 1 and any(c.strip() for c in row[1:]):
+                    columns = [c.strip() for c in row[1:]]
+                    continue
+                if columns is None:
+                    continue
+                team = first.upper()
+                if not team or len(team) > 4:  # team codes are 3 chars (BRO, BUL, ...)
+                    continue
+                for pos, val in zip(columns, row[1:]):
+                    if not pos or pos.lower() == "average":
+                        continue
+                    try:
+                        table[(team, pos)] = float(val)
+                    except (ValueError, TypeError):
+                        pass
+    except OSError as e:
+        log.warning("Could not read %s: %s", p, e)
+    return table
+
+
+def load_def_strength_table(year: int | None = None) -> dict[tuple[str, str], float]:
+    """Load (team, position) → ppm-conceded from data/raw/position_vs_team_*.csv.
+
+    If `year` is given, prefers that year's file; otherwise falls back to
+    the most recent file matching `position_vs_team_*.csv`. Returns an
+    empty dict (so callers degrade gracefully) when no data is available.
+    """
+    if year in _DEF_TABLE_CACHE:
+        return _DEF_TABLE_CACHE[year]
+    from paths import DATA_RAW
+    candidates: list[Path] = []
+    if year is not None:
+        candidates.append(DATA_RAW / f"position_vs_team_{year}.csv")
+    candidates.extend(sorted(DATA_RAW.glob("position_vs_team_*.csv"), reverse=True))
+    seen: set[Path] = set()
+    for path in candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        if not path.exists():
+            continue
+        table = _parse_position_vs_team_csv(path)
+        if table:
+            log.info("Loaded def-strength table: %d (team, position) cells from %s",
+                     len(table), path.name)
+            _DEF_TABLE_CACHE[year] = table
+            return table
+    log.warning("No usable position_vs_team CSV found — def_ppm_conceded "
+                "feature will fall back to mean.")
+    _DEF_TABLE_CACHE[year] = {}
+    return {}
+
 # Numeric columns to scale and feed into the model.
 #
 # CRITICAL: `avg_points` is the TARGET (TARGET = "avg_points"). It must NEVER
@@ -74,6 +166,22 @@ SCALE_COLS = [
     "avg_mins_last3", "avg_mins_last5",
     "form_momentum",
     "is_rookie",
+    # Position-mean baseline: explicit signal of "what does an average
+    # player at this position score?" so the model isn't asked to decode
+    # this from one-hots alone (May 2026 — see engineer_features).
+    "pos_mean_avg_points",
+    # Defensive strength: points-per-minute conceded by the player's
+    # opponent at their primary position. For training rows this is the
+    # player's last-played opponent (vs_team in the historical row); for
+    # prediction rows it's overwritten with the upcoming fixture opponent
+    # via build_prediction_features (NN-4).
+    "def_ppm_conceded",
+    # NOTE: `is_home_next` is set by build_prediction_features when fixtures
+    # are wired, but it's intentionally NOT in SCALE_COLS yet because
+    # historical training rows don't have a parallel home/away signal —
+    # the feature would be a constant 0 during training and add no signal.
+    # Add it here once the scraper extracts historical home/away from the
+    # `Venue` column in the per-round data.
 ]
 
 # Target column (raw, unscaled — `_raw` variants are saved before scaling).
@@ -84,7 +192,15 @@ TARGET = "avg_points"
 # much lower variance than the absolute score. After prediction we add the
 # rolling baseline back. Disable by setting USE_DELTA_TARGET = False (e.g.
 # for a head-to-head A/B test of the two targets).
-USE_DELTA_TARGET = True
+#
+# Disabled (May 2026): on this dataset the delta is mostly noise — round-to-
+# round Supercoach variation is dominated by matchup, minutes and luck, while
+# the learnable signal lives in the *level*. avg_last3 / avg_last5 / form_momentum
+# are already in SCALE_COLS, so the network can use the rolling baseline as a
+# feature rather than as a target transform. Predicting absolute scores also
+# avoids the cold-start collapse where rookies (avg_last3 ≈ 0) get
+# delta-only predictions and need a position-median patch downstream.
+USE_DELTA_TARGET = False
 
 # NN-1: most-recent historical year is reserved as a held-out validation
 # set. The model is trained on years strictly older than this, so we get
@@ -208,6 +324,63 @@ def engineer_features(df: pd.DataFrame,
         ).astype(float)
     else:
         df["is_rookie"] = 0.0
+
+    # ── Position-mean baseline ───────────────────────────────────────────────
+    # Hand the model the absolute scoring level for each position rather than
+    # asking it to decode this from the position one-hots alone. Computed
+    # from rows with non-zero avg_points in the *current* df, so it works at
+    # both training time (historical rows, all have avg_points) and prediction
+    # time (after build_prediction_features merges historical stats in,
+    # rookies get position-median fills via clean_data).
+    primary_pos_for_mean = df["positions"].astype(str).str.split("|").str[0].fillna("UNK")
+    if "avg_points" in df.columns:
+        pts_numeric = pd.to_numeric(df["avg_points"], errors="coerce").fillna(0)
+        nonzero_mask = pts_numeric > 0
+        if nonzero_mask.any():
+            pos_means_series = (
+                pts_numeric[nonzero_mask]
+                .groupby(primary_pos_for_mean[nonzero_mask])
+                .mean()
+            )
+            global_mean = float(pts_numeric[nonzero_mask].mean())
+            pos_means = pos_means_series.to_dict()
+        else:
+            pos_means, global_mean = {}, 0.0
+        df["pos_mean_avg_points"] = (
+            primary_pos_for_mean.map(pos_means).fillna(global_mean)
+        )
+    else:
+        df["pos_mean_avg_points"] = 0.0
+
+    # ── Defensive strength of opponent ───────────────────────────────────────
+    # Look up points-per-minute conceded by the player's `vs_team` at their
+    # primary position. For training rows, vs_team is the player's last
+    # played opponent (per the API season-total dedup). For prediction rows
+    # this column is overwritten with the upcoming fixture opponent in
+    # build_prediction_features, so the same feature reflects "next matchup
+    # ease" at predict time.
+    def_table = load_def_strength_table()
+    if def_table:
+        vs_team_norm = (
+            df["vs_team"].astype(str).str.strip().str.upper()
+            if "vs_team" in df.columns else pd.Series("", index=df.index)
+        )
+        keys = list(zip(vs_team_norm.values, primary_pos_for_mean.values))
+        ppm_vals = np.array(
+            [def_table.get(k, np.nan) for k in keys], dtype=np.float32
+        )
+        overall_mean = (
+            float(np.nanmean(list(def_table.values()))) if def_table else 0.0
+        )
+        ppm_vals = np.where(np.isnan(ppm_vals), overall_mean, ppm_vals)
+        df["def_ppm_conceded"] = ppm_vals
+    else:
+        df["def_ppm_conceded"] = 0.0
+
+    # is_home_next: only set by build_prediction_features when fixture data
+    # is wired in. Default to 0 here so the column exists during training.
+    if "is_home_next" not in df.columns:
+        df["is_home_next"] = 0.0
 
     # ── One-hot encode positions ──────────────────────────────────────────────
     for pos in ALL_POSITIONS:
@@ -362,7 +535,8 @@ def _build_model(n_features: int):
 
 
 def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False,
-                        holdout_year: int | None = None):
+                        holdout_year: int | None = None,
+                        final_retrain: bool = False):
     """
     Load an existing saved model and fine-tune it, or train from scratch.
     Returns the trained Keras model.
@@ -372,6 +546,23 @@ def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False,
     explicit value to lock the validation set across runs — useful for
     reproducible benchmarking and for training on data older than this
     year only.
+
+    final_retrain: when True, train the **production** model on ALL data
+    (no year-aware holdout — the most recent year is included in training).
+    A small 5% random validation split is kept solely so early-stopping has
+    something to monitor; metrics from this run are NOT honest because the
+    same player can appear in both train and val. Always run a non-final
+    pass first to get an honest generalisation estimate, then a final pass
+    to ship.
+
+      Workflow:
+        python model.py --retrain          # eval: holds out most recent year
+        # inspect outputs/model_metrics.csv to confirm the model is useful
+        python model.py --retrain --final  # production: trains on everything
+
+    final_retrain=True implies a from-scratch train (the existing saved
+    model would have been trained under a different validation regime, so
+    fine-tuning across regimes is not meaningful).
     """
     import tensorflow as tf
     from tensorflow import keras
@@ -423,11 +614,25 @@ def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False,
                     len(X_full))
         return None
 
+    # FINAL retrain (production): use ALL data, no year-aware holdout.
+    # The eval pass with --retrain (no --final) gives the honest metric;
+    # this pass ships the model that gets to use the most recent year too.
+    if final_retrain:
+        log.warning("FINAL retrain: training on ALL data with no year holdout. "
+                    "Validation metrics from this run are NOT honest "
+                    "(player-level leakage in the random split). Use the "
+                    "non-final eval run for honest generalisation metrics.")
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_full, y_full, test_size=0.05, random_state=42
+        )
+        holdout_year = None  # for the metrics row
+        log.info("Final-retrain split: %d train, %d val (random 5%%)",
+                 len(X_train), len(X_val))
     # NN-1: year-aware holdout. The most recent historical year is reserved
     # for evaluation and never seen during training. This gives an honest
     # "next-season" estimate instead of the random-split leakage we had
     # before (where the same player could appear in train and test).
-    if "scrape_year" in df.columns:
+    elif "scrape_year" in df.columns:
         years = pd.to_numeric(df["scrape_year"], errors="coerce")
         years = years[mask].values
         max_year = int(np.nanmax(years))
@@ -466,7 +671,7 @@ def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False,
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    if MODEL_PATH.exists() and not force_retrain:
+    if MODEL_PATH.exists() and not force_retrain and not final_retrain:
         log.info("Loading existing model from %s for fine-tuning ...", MODEL_PATH)
         candidate = keras.models.load_model(MODEL_PATH)
         # Schema guard: if SCALE_COLS or ALL_TEAMS changed since the model
@@ -531,6 +736,7 @@ def load_or_train_model(df: pd.DataFrame, force_retrain: bool = False,
         target_kind=("delta" if (USE_DELTA_TARGET
                                   and "avg_last3_raw" in df.columns) else "absolute"),
         max_epochs=int(epochs),
+        mode=("final" if final_retrain else "eval"),
     )
 
     return model
@@ -614,7 +820,9 @@ def compute_defensive_strength(df_historical: pd.DataFrame) -> pd.DataFrame:
 # ── Historical feature builder ────────────────────────────────────────────────
 
 def build_prediction_features(df_2026: pd.DataFrame,
-                               df_historical: pd.DataFrame) -> pd.DataFrame:
+                               df_historical: pd.DataFrame,
+                               fixtures: pd.DataFrame | None = None,
+                               current_round: int | None = None) -> pd.DataFrame:
     """
     Build a prediction-ready feature set for 2026 players by joining each
     player to their most recent historical season stats.
@@ -622,6 +830,15 @@ def build_prediction_features(df_2026: pd.DataFrame,
     - For players with 2025 data: use 2025 stats + 2026 price
     - For players with only 2024 data: use 2024 stats + 2026 price
     - For rookies (no history): fill stat columns with position-group medians
+
+    When `fixtures` and `current_round` are supplied, this also overlays the
+    upcoming opponent for each player (NN-4 fixture wiring): the `vs_team`
+    column is overwritten with the next-round opponent, which downstream
+    feeds into the `def_ppm_conceded` feature so it reflects the upcoming
+    matchup rather than whatever historical row was carried forward.
+    `is_home_next` is set on the same path. When fixtures aren't provided,
+    behaviour is unchanged from before — the historical opponent is kept
+    and `is_home_next` defaults to 0.
 
     Returns a DataFrame with the same schema as df_historical, representing
     expected 2026 performance. Used as input to the model at prediction time.
@@ -766,10 +983,33 @@ def build_prediction_features(df_2026: pd.DataFrame,
             mask_fresh = fresh.notna() & (fresh != 0)
             merged.loc[mask_fresh, col] = fresh[mask_fresh]
 
-    # TODO(NN-4): once fixture scraping lands, add a `next_opponent` column
-    # here and merge in `compute_defensive_strength(df_historical)` on
-    # (next_opponent, primary_position). That gives the model an "ease of
-    # next matchup" signal — historically the single biggest fantasy edge.
+    # ── Next-opponent overlay (NN-4 fixture wiring) ─────────────────────────
+    # When a fixture frame and a current-round number are supplied, replace
+    # each player's `vs_team` with their upcoming opponent and set the
+    # `is_home_next` flag. `engineer_features` then turns this into the
+    # `def_ppm_conceded` feature via the position_vs_team CSV. Players on a
+    # bye get vs_team cleared so the feature falls back to the league mean.
+    if fixtures is not None and not fixtures.empty and current_round is not None:
+        from scraper import get_next_opponent
+        team_series = (
+            merged["team"].astype(str).str.upper().str.strip()
+            if "team" in merged.columns else pd.Series("", index=merged.index)
+        )
+        next_opps, home_flags = [], []
+        for team in team_series:
+            opp, is_home = get_next_opponent(team, current_round, fixtures)
+            next_opps.append(opp if opp else "")
+            home_flags.append(1.0 if is_home else 0.0)
+        merged["vs_team"] = next_opps
+        merged["is_home_next"] = home_flags
+        n_matched = sum(1 for n in next_opps if n)
+        log.info("Fixture wiring: %d/%d players have a round-%d opponent",
+                 n_matched, len(merged), current_round)
+    else:
+        # Default — column is required by engineer_features.
+        if "is_home_next" not in merged.columns:
+            merged["is_home_next"] = 0.0
+
     # TODO(NN-3): replace the per-position one-hot columns with a learned
     # position embedding. Refactor `_build_model` to use the Functional
     # API: numeric feature input + position id input → embedding(7, 4) →
@@ -792,7 +1032,9 @@ def build_prediction_features(df_2026: pd.DataFrame,
 # ── Prediction ────────────────────────────────────────────────────────────────
 
 def predict_next_round_scores(df: pd.DataFrame,
-                               df_historical: pd.DataFrame = None) -> pd.DataFrame:
+                               df_historical: pd.DataFrame = None,
+                               fixtures: pd.DataFrame | None = None,
+                               current_round: int | None = None) -> pd.DataFrame:
     """
     Add a 'predicted_points' column to df using the saved model.
 
@@ -803,6 +1045,11 @@ def predict_next_round_scores(df: pd.DataFrame,
 
     In-season path: use the model directly on df's features.
     Cold-start: zero/negative predictions → position-group median.
+
+    fixtures / current_round (optional): when both are supplied, the
+    pre-season path overlays the round-`current_round` opponent onto each
+    player so the `def_ppm_conceded` feature reflects the upcoming matchup.
+    Falls back silently to "no fixture wiring" if either is missing.
     """
     from tensorflow import keras
 
@@ -822,7 +1069,10 @@ def predict_next_round_scores(df: pd.DataFrame,
 
         if not hist_with_scores.empty and MODEL_PATH.exists():
             log.info("Pre-season mode: using 2024/2025 history + trained model for predictions")
-            df_feat_pred = build_prediction_features(df, hist_with_scores)
+            df_feat_pred = build_prediction_features(
+                df, hist_with_scores,
+                fixtures=fixtures, current_round=current_round,
+            )
             df_feat_pred_clean = clean_data(df_feat_pred)  # type: ignore
             df_feat_pred_eng, _ = engineer_features(       # type: ignore
                 df_feat_pred_clean, fit_scaler=False,
@@ -936,7 +1186,16 @@ if __name__ == "__main__":
     parser.add_argument("--data", default="data/processed/master_historical.csv",
                         help="Path to processed CSV")
     parser.add_argument("--retrain", action="store_true", help="Force full retrain")
+    parser.add_argument(
+        "--final", action="store_true",
+        help="Train production model on ALL data (no year holdout). "
+             "Validation metrics from this run are NOT honest — run a "
+             "non-final pass first to get an honest generalisation estimate. "
+             "Implies --retrain (always trains from scratch).",
+    )
     args = parser.parse_args()
+    if args.final:
+        args.retrain = True  # final mode always retrains from scratch
 
     data_path = Path(args.data)
     if not data_path.exists():
@@ -950,7 +1209,8 @@ if __name__ == "__main__":
     df_clean = clean_data(df)
     df_feat, scaler = engineer_features(df_clean, fit_scaler=True)
 
-    model = load_or_train_model(df_feat, force_retrain=args.retrain)
+    model = load_or_train_model(df_feat, force_retrain=args.retrain,
+                                final_retrain=args.final)
 
     if model is not None:
         df_pred = predict_next_round_scores(df_feat)

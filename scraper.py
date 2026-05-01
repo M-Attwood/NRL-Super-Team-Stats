@@ -495,6 +495,132 @@ def scrape_position_vs_team(year: int = 2026, session=None) -> pd.DataFrame:
     return df
 
 
+# ── Fixtures (NN-4 fixture wiring) ────────────────────────────────────────────
+#
+# To produce a real "next-opponent" feature we need a fixture table:
+# round → (home_team, away_team) per match. The site doesn't expose this in
+# the same JSON API the stats use, so we attempt a few likely page URLs and
+# fall back to a manual CSV the user can populate themselves.
+#
+# Output schema (data/raw/fixtures_<year>.csv):
+#   round (int), home_team (3-char code), away_team (3-char code), date (optional)
+#
+# If both auto-scrape and manual file fail, model.build_prediction_features
+# degrades gracefully: it leaves vs_team as the historical value and the
+# def_ppm_conceded feature still reflects last-played-opponent strength.
+
+_FIXTURE_URLS = [
+    # Best-effort candidate URLs, tried in order. Any of these returning a
+    # parseable HTML table with home/away columns is enough.
+    f"{BASE_URL}/draw.php",
+    f"{BASE_URL}/fixtures.php",
+    f"{BASE_URL}/schedule.php",
+]
+
+
+def _normalise_fixture_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Map common column-naming variants to round / home_team / away_team / date."""
+    if df.empty:
+        return df
+    rename_map = {}
+    for col in df.columns:
+        c = str(col).lower().strip()
+        if c in {"round", "rd", "round#", "rnd"} and "round" not in rename_map.values():
+            rename_map[col] = "round"
+        elif "home" in c and "home_team" not in rename_map.values():
+            rename_map[col] = "home_team"
+        elif ("away" in c or "visitor" in c) and "away_team" not in rename_map.values():
+            rename_map[col] = "away_team"
+        elif c in {"date", "kickoff", "start"} and "date" not in rename_map.values():
+            rename_map[col] = "date"
+    df = df.rename(columns=rename_map)
+    needed = {"round", "home_team", "away_team"}
+    if not needed.issubset(df.columns):
+        return pd.DataFrame()
+    keep = ["round", "home_team", "away_team"] + (["date"] if "date" in df.columns else [])
+    df = df[keep].copy()
+    df["round"] = pd.to_numeric(df["round"], errors="coerce").astype("Int64")
+    df = df.dropna(subset=["round", "home_team", "away_team"])
+    df["home_team"] = df["home_team"].astype(str).str.upper().str.strip()
+    df["away_team"] = df["away_team"].astype(str).str.upper().str.strip()
+    return df.reset_index(drop=True)
+
+
+def scrape_fixtures(year: int = 2026, save: bool = True,
+                    session: requests.Session = None) -> pd.DataFrame:
+    """Return the season fixture as round / home_team / away_team rows.
+
+    Resolution order:
+      1. data/raw/fixtures_<year>.csv (if present — manual override or cache).
+      2. Best-effort scrape of nrlsupercoachstats.com pages (draw, fixtures,
+         schedule). Site URL patterns are guesses; if they don't return a
+         parseable table the function returns an empty DataFrame.
+
+    The downstream feature builder degrades gracefully if this returns
+    empty: predictions still work, just without next-opponent strength.
+    To use without scraping, drop a CSV at data/raw/fixtures_<year>.csv
+    with columns: round, home_team, away_team [, date]. Team codes must
+    match planner.BYE_ROUNDS (BRO, BUL, CBR, ...).
+    """
+    fixture_path = DATA_RAW / f"fixtures_{year}.csv"
+    if fixture_path.exists():
+        try:
+            df = pd.read_csv(fixture_path)
+            df = _normalise_fixture_columns(df)
+            if not df.empty:
+                log.info("Loaded %d fixture rows from %s", len(df), fixture_path)
+                return df
+            log.warning("%s exists but couldn't be parsed; re-scraping", fixture_path)
+        except OSError as e:
+            log.warning("Couldn't read %s: %s", fixture_path, e)
+
+    if session is None:
+        session = _session()
+        session.headers["X-Requested-With"] = ""
+        session.headers["Accept"] = "text/html,application/xhtml+xml,*/*"
+
+    for url in _FIXTURE_URLS:
+        df_raw = _scrape_html_table(url, {"year": year}, session)
+        if df_raw.empty:
+            continue
+        df = _normalise_fixture_columns(df_raw)
+        if df.empty:
+            continue
+        if save:
+            DATA_RAW.mkdir(parents=True, exist_ok=True)
+            df.to_csv(fixture_path, index=False)
+            log.info("Fixtures saved: %d rows → %s (source %s)",
+                     len(df), fixture_path, url)
+        return df
+
+    log.warning(
+        "No fixture data found. Tried: %s. To enable next-opponent features, "
+        "drop a CSV at %s with columns round, home_team, away_team.",
+        ", ".join(_FIXTURE_URLS), fixture_path,
+    )
+    return pd.DataFrame()
+
+
+def get_next_opponent(team: str, current_round: int,
+                       fixtures: pd.DataFrame) -> tuple[str | None, bool]:
+    """Look up the round-`current_round` opponent of `team`.
+
+    Returns (opponent_code, is_home). Returns (None, False) when the team
+    has a bye, the round isn't in the fixture, or no fixture is available.
+    """
+    if fixtures is None or fixtures.empty or "round" not in fixtures.columns:
+        return None, False
+    team_upper = str(team).upper().strip()
+    rnd_rows = fixtures[fixtures["round"] == current_round]
+    home = rnd_rows[rnd_rows["home_team"].str.upper() == team_upper]
+    if not home.empty:
+        return str(home.iloc[0]["away_team"]).upper(), True
+    away = rnd_rows[rnd_rows["away_team"].str.upper() == team_upper]
+    if not away.empty:
+        return str(away.iloc[0]["home_team"]).upper(), False
+    return None, False
+
+
 # ── Historical Master ─────────────────────────────────────────────────────────
 
 def update_historical_data(new_df: pd.DataFrame,
