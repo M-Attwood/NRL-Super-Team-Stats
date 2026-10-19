@@ -7,8 +7,8 @@ import pandas as pd
 import pytest
 
 from season_sim import (IMPROVED, ORIGINAL, RoundData, SeasonInputs, best_lineup,
-                        greedy_lineup_value, outlook_for, price_table, round_score,
-                        spendable_trades)
+                        expected_rise, greedy_lineup_value, outlook_for, price_table,
+                        round_score, spendable_trades)
 
 
 def test_lineup_respects_active_quotas():
@@ -117,3 +117,18 @@ def test_bye_exempt_lets_a_bye_round_use_its_full_allowance():
     assert spendable_trades(exempt, 18, 27, trades_used=33, bye_trades=byes) == 4
     assert spendable_trades(exempt, 18, 27, trades_used=44, bye_trades=byes) == 2   # never past 46
     assert spendable_trades(exempt, 17, 27, trades_used=33, bye_trades=byes) == 0   # normal round
+
+
+def test_cash_cows_are_valued_by_their_whole_expected_rise():
+    frame = pd.DataFrame({
+        "price": [250_000.0, 250_000.0, 700_000.0], "predicted_points": [60.0, 60.0, 90.0],
+        "price_change_3": [40_000.0, 40_000.0, 5_000.0], "named": [True, False, True],
+    }, index=["cow", "unplayed", "premium"])
+    rounds = {1: RoundData(frame, pd.DataFrame(), set())}
+    inputs = SeasonInputs(2026, rounds, points_per_dollar=1e-4, price_intercept=0.0)
+    off = expected_rise(inputs, 1, IMPROVED)
+    assert list(off) == [40_000, 40_000, 5_000]               # off: the 3-game price model
+    on = expected_rise(inputs, 1, replace(IMPROVED, cow_price=300_000))
+    assert on["cow"] == 350_000             # deserves $600K (60 pts / 1e-4), costs $250K
+    assert on["unplayed"] == 40_000         # no games yet: no cow bonus
+    assert on["premium"] == 5_000           # over the price cap

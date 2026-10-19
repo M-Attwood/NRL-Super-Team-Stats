@@ -75,6 +75,8 @@ class Strategy:
     save_for_byes: bool = False    # also keep each later big bye round's full allowance
     bye_exempt: bool = False       # a big bye round may use its full allowance regardless
     plan_byes: bool = False        # big bye rounds count in full, not discounted
+    cow_price: float = 0.0         # cash cows: players up to this price who have played this
+    cow_weight: float = 1.0        # season are valued by their whole expected rise (0 = off)
     cooldown: int = 3              # rounds before a sold player can be bought back
     candidates: int = 40           # trades scored in full per decision
 
@@ -100,6 +102,7 @@ class SeasonInputs:
     rounds: dict[int, RoundData]
     points_per_dollar: float     # what $1 buys in points per game (price slope)
     origin_week: dict[int, int] = field(default_factory=dict)   # round -> 0/1/2
+    price_intercept: float = 0.0  # points at $0 in the price fit (price-implied score)
 
     @property
     def bye_trades(self) -> dict[int, int]:
@@ -222,7 +225,7 @@ def prepare_season(rounds: pd.DataFrame, totals: dict, year: int, predictor,
                              playing[rnd])
         log.info("Prepared %d round %d: %d players, %d named", year, rnd, len(frame),
                  int(frame["named"].sum()))
-    return SeasonInputs(year, out, points_per_dollar=price_fit[0],
+    return SeasonInputs(year, out, points_per_dollar=price_fit[0], price_intercept=price_fit[1],
                         origin_week={r: int(weeks.get((year, r), 0)) for r in out})
 
 
@@ -290,6 +293,7 @@ class Outlook:
     weights: np.ndarray          # discount per round
     cash_rate: float             # points per $ of cash, over the rest of the season
     counted: list[int]           # scores that count in each round (18, or 13 in a bye)
+    rise: pd.Series | None = None  # expected price rise per player ($)
 
 
 def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy) -> Outlook:
@@ -320,7 +324,23 @@ def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy) -> Outlook:
     later = strat.discount ** np.arange(1, last - rnd + 1)
     cash_rate = strat.cash_weight * inputs.points_per_dollar * float(later.sum())
     return Outlook(pd.DataFrame(expected), weights, cash_rate,
-                   [inputs.counted(h) for h in rounds_ahead])
+                   [inputs.counted(h) for h in rounds_ahead], expected_rise(inputs, rnd, strat))
+
+
+def expected_rise(inputs: SeasonInputs, rnd: int, strat: Strategy) -> pd.Series:
+    """Expected price rise per player: the 3-game price model, or for a cash
+    cow (cheap, has played this season) the whole climb to the price its
+    predicted score deserves, since Supercoach prices chase scoring."""
+    f = inputs.rounds[rnd].frame
+    rise = f["price_change_3"].astype(float)
+    if not strat.cow_price:
+        return rise
+    played = sum(inputs.rounds[r].frame["named"].reindex(f.index, fill_value=False)
+                 for r in range(1, rnd + 1)) > 0
+    deserved = (f["predicted_points"] - inputs.price_intercept) / inputs.points_per_dollar
+    headroom = strat.cow_weight * (deserved - f["price"]).clip(lower=0)
+    cow = played & (f["price"] <= strat.cow_price)
+    return rise.where(~cow, np.maximum(rise, headroom))
 
 
 def squad_value(squad: list[str], view: Outlook, eligible: dict) -> float:
@@ -336,7 +356,8 @@ def candidate_trades(squad: list[str], bank: float, f: pd.DataFrame, view: Outlo
                      eligible: dict, banned_in: set, locked_out: set, n: int):
     """Shortlist of cap-legal, position-compatible trades by one-for-one value."""
     solo = pd.Series(view.expected.to_numpy() @ view.weights, index=view.expected.index)
-    solo += view.cash_rate * f["price_change_3"]
+    rise = view.rise if view.rise is not None else f["price_change_3"]
+    solo += view.cash_rate * rise
     pool = f.index.difference(squad).difference(list(banned_in))
     pool_price = f.loc[pool, "price"]
     pool_pos = pd.Series([set(eligible[p]) for p in pool], index=pool)
@@ -360,12 +381,12 @@ def best_trade(squad, bank, f, view, eligible, strat, banned_in, locked_out):
                                  strat.candidates)
     if strat.lineup_aware:
         base = squad_value(squad, view, eligible)
+        rise = view.rise if view.rise is not None else f["price_change_3"]
         scored = []
         for _, out, inn in shortlist:
             new = [inn if p == out else p for p in squad]
             cash = view.cash_rate * (f.at[out, "price"] - f.at[inn, "price"]
-                                     + f.at[inn, "price_change_3"]
-                                     - f.at[out, "price_change_3"])
+                                     + rise[inn] - rise[out])
             scored.append((squad_value(new, view, eligible) - base + cash, out, inn))
         shortlist = sorted(scored, reverse=True)
     for gain, out, inn in shortlist:
