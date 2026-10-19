@@ -1,0 +1,77 @@
+{
+  "season": 2026,
+  "training_games": 25284,
+  "games_tested": 6407,
+  "model_benchmark": {
+    "Wide & Deep NN": {
+      "mae": 17.0117,
+      "rmse": 22.693,
+      "r2": 0.2355,
+      "rank_corr": 0.5088
+    },
+    "Ridge regression": {
+      "mae": 16.985,
+      "rmse": 22.6517,
+      "r2": 0.2382,
+      "rank_corr": 0.5124
+    },
+    "Season average": {
+      "mae": 18.079,
+      "rmse": 23.9614,
+      "r2": 0.1476,
+      "rank_corr": 0.4772
+    },
+    "Last-3 average": {
+      "mae": 19.0057,
+      "rmse": 25.1656,
+      "r2": 0.0598,
+      "rank_corr": 0.4526
+    },
+    "Price-implied": {
+      "mae": 17.5043,
+      "rmse": 23.2102,
+      "r2": 0.2002,
+      "rank_corr": 0.48
+    },
+    "Hindsight oracle": {
+      "mae": 15.926,
+      "rmse": 21.1018,
+      "r2": 0.3389,
+      "rank_corr": 0.5948
+    }
+  },
+  "weekly_squad_backtest": {
+    "season_points": {
+      "Wide & Deep NN": 32086,
+      "Season average": 30401,
+      "Price only": 31534,
+      "Hindsight-perfect": 50645
+    },
+    "rounds_won_by_model": {
+      "Season average": 21,
+      "Price only": 18,
+      "Hindsight-perfect": 0
+    },
+    "rounds": 27
+  },
+  "preseason_squad_backtest": {
+    "season_points": {
+      "Wide & Deep NN": 21327,
+      "Last season's average": 19917,
+      "Price only": 23515,
+      "Hindsight-perfect": 34693
+    },
+    "squad_cost": {
+      "Wide & Deep NN": 11947400,
+      "Last season's average": 11938700,
+      "Price only": 11947900,
+      "Hindsight-perfect": 11939600
+    },
+    "correlation_with_final_average": {
+      "Wide & Deep NN": 0.642,
+      "Start price": 0.634,
+      "Last season's average": 0.506
+    }
+  },
+  "salary_cap": 11950000
+}

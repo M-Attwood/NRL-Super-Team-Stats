@@ -2,368 +2,40 @@
 trade_advisor.py — Weekly trade advisor for NRL Supercoach.
 
 Each round:
-  1. Scrapes fresh 2026 stats (actual game performance)
+  1. Predicts every player's score for the round (main.build_predictions)
   2. Builds the best possible 26-player squad from confirmed starters only
-  3. Compares the ideal team to your current squad
-  4. Recommends the best 2 trades to move your squad toward the ideal
+  3. Compares that ideal team to your current squad
+  4. Recommends the best trades (3-round horizon, salary cap, position quotas)
+     and draws a trade map (outputs/trade_map_r<N>.png)
+
+Your squad and the round's confirmed starters come from
+data/inputs/round_<N>.yaml (see squad_state.py for the schema).
 
 Usage:
-    python trade_advisor.py                   # scrape fresh data + advise
-    python trade_advisor.py --no-scrape       # use existing data
+    python trade_advisor.py --round 9 --no-scrape
 """
 
 import argparse
 import logging
 import sys
-from pathlib import Path
 from difflib import SequenceMatcher
 
-import pandas as pd
-import numpy as np
 import matplotlib
+import pandas as pd
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # noqa: E402
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+from paths import DATA_INPUTS, OUTPUTS_DIR  # noqa: E402
+
 log = logging.getLogger(__name__)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  USER INPUT — UPDATE THESE EACH ROUND
-# ═══════════════════════════════════════════════════════════════════════════════
-
-CURRENT_ROUND = 9
-
-# ── YOUR CURRENT 26-PLAYER SQUAD ──
-MY_SQUAD =[
-    # Starting 13
-    "Harry Grant",
-    "Jackson Ford",
-    "Arama Hau",
-    "Siua Wong",
-    "Nathan Cleary",
-    "Cameron Munster",
-    "Latrell Mitchell",
-    "Herbie Farnworth",
-    "Thomas Jenkins",
-    "Tom Chester",
-    "Dylan Edwards",
-    "Sialetili Faeamani",
-    "Jack Williams",
-    # Bench / Reserves 13
-    "Brandon Wakeham",
-    "Dominic Young",
-    "Francis Manuleleua",
-    "Cooper Clarke",
-    "Kalani Going",
-    "John Fineanganofo",
-    "Zane Harrison",
-    "Moses Leo",
-    "Noah Martin",
-    "Hudson Young",
-    "Reece Foley",
-    "Setu Tu",
-    "Motu Pasikala",
-]
-
-ROUND_STARTERS =[
-    # Bulldogs
-    "Connor Tracey",
-    "Jonathan Sua",
-    "Bronson Xerri",
-    "Stephen Crichton",
-    "Enari Tuala",
-    "Matt Burton",
-    "Lachlan Galvin",
-    "Samuel Hughes",
-    "Bailey Hayward",
-    "Leo Thompson",
-    "Sitili Tupouniua",
-    "Jacob Preston",
-    "Jaeman Salmon",
-    # Cowboys
-    "Scott Drinkwater",
-    "Braidon Burns",
-    "Jaxon Purdue",
-    "Tom Chester",
-    "Zac Laybutt",
-    "Jake Clifford",
-    "Tom Dearden",
-    "Coen Hess",
-    "Reed Mahoney",
-    "Jason Taumalolo",
-    "Heilum Luki",
-    "Jeremiah Nanai",
-    "Reuben Cotter",
-    # Dolphins
-    "Hamiso Tabuai-Fidow",
-    "Jamayne Isaako",
-    "Trai Fuller",
-    "Herbie Farnworth",
-    "Selwyn Cobbo",
-    "Bradley Schneider",
-    "Isaiya Katoa",
-    "Tom Gilbert",
-    "Max Plath",
-    "Francis Molo",
-    "Connelly Lemuelu",
-    "Kulikefu Finefeuiaki",
-    "Morgan Knowles",
-    # Storm
-    "Sualauvi Faalogo",
-    "Will Warbrick",
-    "Jack Howarth",
-    "Nick Meaney",
-    "Hugo Peel",
-    "Cameron Munster",
-    "Tyran Wishart",
-    "Stefano Utoikamanu",
-    "Harry Grant",
-    "Josh King",
-    "Shawn Blore",
-    "Ativalu Lisati",
-    "Alec MacDonald",
-    # Titans
-    "Keano Kini",
-    "Sialetili Faeamani",
-    "Jojo Fifita",
-    "AJ Brimson",
-    "Phillip Sami",
-    "Lachlan Ilias",
-    "Jayden Campbell",
-    "Kurtis Morrin",
-    "Sam Verrills",
-    "Tino Fa'asuamaleaui",
-    "Arama Hau",
-    "Beau Fermor",
-    "Chris Randall",
-    # Raiders
-    "Kaeo Weekes",
-    "Savelio Tamale",
-    "Sebastian Kris",
-    "Matthew Timoko",
-    "Jed Stuart",
-    "Ethan Strange",
-    "Ethan Sanders",
-    "Corey Horsburgh",
-    "Tom Starling",
-    "Joseph Tapine",
-    "Ata Mariota",
-    "Simi Sasagi",
-    "Jayden Brailey",
-    # Eels
-    "Joash Papalii",
-    "Brian Kelly",
-    "Will Penisini",
-    "Sean Russell",
-    "Josh Addo-Carr",
-    "Ronald Volkman",
-    "Mitchell Moses",
-    "Luca Moretti",
-    "Ryley Smith",
-    "Junior Paulo",
-    "Charlie Guymer",
-    "Jack Williams",
-    "Jack De Belin",
-    # Warriors
-    "Taine Tuaupiki",
-    "Dallin Watene-Zelezniak",
-    "Roger Tuivasa-Sheck",
-    "Adam Pompey",
-    "Alofiana Khan-Pereira",
-    "Chanel Harris-Tavita",
-    "Tanah Boyd",
-    "James Fisher-Harris",
-    "Wayde Egan",
-    "Jackson Ford",
-    "Leka Halasima",
-    "Kurt Capewell",
-    "Erin Clark",
-    # Roosters
-    "James Tedesco",
-    "Daniel Tupou",
-    "Hugo Savala",
-    "Robert Toia",
-    "Mark Nawaqanitawase",
-    "Daly Cherry-Evans",
-    "Sam Walker",
-    "Naufahu Whyte",
-    "Reece Robson",
-    "Lindsay Collins",
-    "Angus Crichton",
-    "Siua Wong",
-    "Victor Radley",
-    # Broncos
-    "Reece Walsh",
-    "Josiah Karapani",
-    "Kotoni Staggs",
-    "Gehamat Shibasaki",
-    "Deine Mariner",
-    "Ezra Mam",
-    "Adam Reynolds",
-    "Ben Talty",
-    "Cory Paix",
-    "Jack Gosiewski",
-    "Xavier Willison",
-    "Jordan Riki",
-    "Patrick Carrigan",
-    # Knights
-    "Kalyn Ponga",
-    "Dominic Young",
-    "Dane Gagai",
-    "Bradman Best",
-    "Greg Marzhew",
-    "Fletcher Sharpe",
-    "Dylan Brown",
-    "Jacob Saifiti",
-    "Phoenix Crossland",
-    "Trey Mooney",
-    "Dylan Lucas",
-    "Jermaine McEwen",
-    "Mat Croker",
-    # Rabbitohs
-    "Matthew Dufty",
-    "Alex Johnston",
-    "Latrell Mitchell",
-    "Jack Wighton",
-    "Campbell Graham",
-    "Cody Walker",
-    "Jamie Humphreys",
-    "Tevita Tatola",
-    "Bronson Garlick",
-    "Sean Keppie",
-    "Keaon Koloamatangi",
-    "Tallis Duncan",
-    "Cameron Murray",
-    # Sharks
-    "William Kennedy",
-    "Mawene Hiroti",
-    "Siosifa Talakai",
-    "KL Iro",
-    "Samuel Stonestreet",
-    "Braydon Trindall",
-    "Nicholas Hynes",
-    "Addin Fonua-Blake",
-    "Blayke Brailey",
-    "Toby Rudolf",
-    "Briton Nikora",
-    "Teig Wilton",
-    "Cameron McInnes",
-    # Wests Tigers
-    "Sunia Turuva",
-    "Jeral Skelton",
-    "Taylan May",
-    "Starford To'a",
-    "Luke Laulilii",
-    "Jarome Luai",
-    "Adam Doueihi",
-    "Terrell May",
-    "Tristan Hope",
-    "Fonua Pole",
-    "Samuela Fainu",
-    "Tony Sukkar",
-    "Alex Twal",
-    # Panthers
-    "Dylan Edwards",
-    "Thomas Jenkins",
-    "Paul Alamoti",
-    "Casey McLean",
-    "Brian To'o",
-    "Blaize Talagi",
-    "Nathan Cleary",
-    "Moses Leota",
-    "Freddy Lussick",
-    "Lindsay Smith",
-    "Isaiah Papali'i",
-    "Luke Garner",
-    "Isaah Yeo",
-    # Sea Eagles
-    "Tolutau Koula",
-    "Jason Saab",
-    "Clayton Faulalo",
-    "Reuben Garrick",
-    "Lehi Hopoate",
-    "Luke Brooks",
-    "Jamal Fogarty",
-    "Taniela Paseka",
-    "Brandon Wakeham",
-    "Kobe Hetherington",
-    "Haumole Olakau'atu",
-    "Ben Trbojevic",
-    "Jake Trbojevic",
-    # Dragons on bye for Round 9
-]
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  DATA PIPELINE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from datetime import datetime as _dt
-HIST_YEARS = list(range(2022, _dt.now().year))
 
 
 def load_player_pool(round_num: int, year: int = 2026,
                      no_scrape: bool = False) -> pd.DataFrame:
-    """
-    Run the full data pipeline: scrape -> clean -> engineer -> predict.
-    Returns df_pred with predicted_points for all 2026 players.
-    """
-    from scraper import scrape_full, update_historical_data
-    from model import clean_data, engineer_features, load_or_train_model, predict_next_round_scores
-
-    from paths import (
-        DATA_RAW, DATA_ROUNDS, DATA_PROCESSED, MODELS_DIR, OUTPUTS_DIR,
-    )
-    for d in (DATA_RAW, DATA_ROUNDS, DATA_PROCESSED, MODELS_DIR, OUTPUTS_DIR):
-        d.mkdir(parents=True, exist_ok=True)
-
-    # Step 1: Scrape or load 2026 data
-    if no_scrape:
-        from paths import DATA_RAW
-        raw_files = sorted(DATA_RAW.glob("nrl_data_*.csv"), reverse=True)
-        if not raw_files:
-            log.error("No data files found. Run without --no-scrape first.")
-            sys.exit(1)
-        df_2026 = pd.read_csv(raw_files[0], low_memory=False)
-        log.info("Loaded %d players from %s", len(df_2026), raw_files[0])
-    else:
-        log.info("Scraping fresh 2026 data ...")
-        df_2026 = scrape_full(year=year, save=True)
-        if df_2026.empty:
-            log.error("Scraper returned no data.")
-            sys.exit(1)
-        log.info("Scraped %d players", len(df_2026))
-
-    # Step 2: Load historical data
-    from main import load_or_scrape_historical
-    df_hist_raw = load_or_scrape_historical(df_2026, years=HIST_YEARS)
-
-    # Step 3: Merge and engineer features
-    if not df_hist_raw.empty:
-        df_all = update_historical_data(
-            pd.concat([df_2026, df_hist_raw], ignore_index=True)
-        )
-    else:
-        df_all = update_historical_data(df_2026)
-
-    df_clean = clean_data(df_all)
-    df_feat, _ = engineer_features(df_clean, fit_scaler=True)
-
-    # Step 4: Train/fine-tune model
-    load_or_train_model(df_feat)
-
-    # Step 5: Predict 2026 scores
-    if "scrape_year" in df_feat.columns:
-        df_2026_feat = df_feat[df_feat["scrape_year"] == 2026].copy()
-    else:
-        df_2026_feat = df_feat.copy()
-
-    df_pred = predict_next_round_scores(df_2026_feat, df_historical=df_hist_raw)
+    """Predicted scores for every rostered player for `round_num`."""
+    from main import build_predictions
+    df_pred, _ = build_predictions(year, round_num, no_scrape=no_scrape)
     log.info("Predictions ready: %d players", len(df_pred))
     return df_pred
 
@@ -1045,7 +717,7 @@ def print_report(current_squad: list[dict], ideal_squad: list[dict],
     print(f"    Est. scoring total: {comparison['current_scoring_total']:.0f} pts")
 
     # Ideal team summary
-    print(f"\n  IDEAL TEAM (from confirmed starters only):")
+    print("\n  IDEAL TEAM (from confirmed starters only):")
     print(f"    Salary: ${ideal_salary:,.0f} / ${cap:,}")
     print(f"    Est. scoring total: {comparison['ideal_scoring_total']:.0f} pts")
 
@@ -1092,7 +764,7 @@ def print_report(current_squad: list[dict], ideal_squad: list[dict],
     n_overlap = len(comparison["overlap"])
     n_add = len(comparison["players_to_add"])
     n_drop = len(comparison["players_to_drop"])
-    print(f"\n  SQUAD COMPARISON:")
+    print("\n  SQUAD COMPARISON:")
     print(f"    Players in both teams: {n_overlap}/{len(current_squad)}")
     print(f"    In ideal but not yours: {n_add}")
     print(f"    In yours but not ideal: {n_drop}")
@@ -1100,7 +772,7 @@ def print_report(current_squad: list[dict], ideal_squad: list[dict],
     # Non-starters
     non_starters = comparison["non_starters"]
     if non_starters:
-        print(f"\n  NON-STARTERS IN YOUR SQUAD:")
+        print("\n  NON-STARTERS IN YOUR SQUAD:")
         for i, p in enumerate(non_starters, 1):
             name = p["player_name"]
             pos = p.get("positions", "?").split("|")[0]
@@ -1117,7 +789,7 @@ def print_report(current_squad: list[dict], ideal_squad: list[dict],
     ]
     starters_in_squad.sort(key=lambda p: p.get("predicted_points", 0), reverse=True)
     if starters_in_squad:
-        print(f"\n  STARTERS IN YOUR SQUAD:")
+        print("\n  STARTERS IN YOUR SQUAD:")
         for i, p in enumerate(starters_in_squad, 1):
             name = p["player_name"]
             pos = p.get("positions", "?").split("|")[0]
@@ -1197,7 +869,7 @@ def print_report(current_squad: list[dict], ideal_squad: list[dict],
         cap_left = cap - final_salary
 
         new_overlap = n_overlap + sum(1 for t in trades if t["in_ideal"])
-        print(f"\n  AFTER TRADES:")
+        print("\n  AFTER TRADES:")
         print(f"    Salary used: ${final_salary:,.0f} / ${cap:,}"
               f"  (${cap_left:,.0f} remaining)")
         print(f"    Overlap with ideal: {new_overlap}/{len(current_squad)}"
@@ -1212,7 +884,7 @@ def export_report(current_squad: list[dict], ideal_squad: list[dict],
                   comparison: dict, trades: list[dict],
                   confirmed_starters: set[str], round_num: int):
     """Export trade advice to CSV."""
-    output_dir = Path("outputs")
+    output_dir = OUTPUTS_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Export comparison
@@ -1385,9 +1057,9 @@ def generate_trade_chart(df_pred: pd.DataFrame,
     ax.set_xlabel("Price ($K)", fontsize=11)
     ax.set_ylabel("Predicted Points", fontsize=11)
     ax.set_title(
-        f"Price vs Predicted Value  —  "
-        f"Green = your squad  |  Red = ideal only  |  "
-        f"Gold = keep  |  Arrows = suggested trades",
+        "Price vs Predicted Value  —  "
+        "Green = your squad  |  Red = ideal only  |  "
+        "Gold = keep  |  Arrows = suggested trades",
         fontsize=10,
     )
     ax.legend(fontsize=9, loc="lower right")
@@ -1465,7 +1137,7 @@ def generate_trade_chart(df_pred: pd.DataFrame,
         fontsize=8, loc="lower right",
     )
 
-    out_path = Path("outputs") / f"trade_map_r{round_num}.png"
+    out_path = OUTPUTS_DIR / f"trade_map_r{round_num}.png"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -1477,62 +1149,39 @@ def generate_trade_chart(df_pred: pd.DataFrame,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _load_round_inputs(round_num: int) -> tuple[list[str], list[str]]:
-    """Load (squad, starters) for a round from data/inputs/round_{n}.yaml.
-
-    Falls back to the hardcoded MY_SQUAD / ROUND_STARTERS lists at the top
-    of this module if the YAML file isn't present (so the existing
-    workflow keeps working). Once all weekly data lives in YAML you can
-    delete the hardcoded lists.
-
-    Always logs which path was used so the data source is traceable from
-    the run log alone — no detective work to figure out "where did this
-    squad come from?" if a wrong lineup ever ships.
-    """
+    """Load (squad, starters) for a round from data/inputs/round_<N>.yaml."""
     import yaml
-    from paths import DATA_INPUTS
 
     yaml_path = DATA_INPUTS / f"round_{round_num}.yaml"
-    if yaml_path.exists():
-        log.info("[inputs source] YAML  →  %s", yaml_path)
-        doc = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
-        squad = doc.get("squad", [])
-        starters = doc.get("starters", [])
-        if not squad or not starters:
-            log.error("%s is missing 'squad' or 'starters' keys", yaml_path)
-            sys.exit(1)
-        return squad, starters
+    if not yaml_path.exists():
+        log.error("No inputs for round %d — create %s with 'squad' and "
+                  "'starters' lists.", round_num, yaml_path)
+        sys.exit(1)
+    doc = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    squad, starters = doc.get("squad", []), doc.get("starters", [])
+    if not squad or not starters:
+        log.error("%s is missing 'squad' or 'starters'", yaml_path)
+        sys.exit(1)
+    log.info("Round inputs: %s (%d squad, %d starters)",
+             yaml_path, len(squad), len(starters))
+    return squad, starters
 
-    if MY_SQUAD and ROUND_STARTERS:
-        log.warning(
-            "[inputs source] FALLBACK  →  hardcoded MY_SQUAD/ROUND_STARTERS in "
-            "trade_advisor.py (no %s found). Migrate this round to YAML when "
-            "you next update.",
-            yaml_path,
-        )
-        return list(MY_SQUAD), list(ROUND_STARTERS)
 
-    log.error(
-        "[inputs source] MISSING — no %s, and the hardcoded MY_SQUAD/ROUND_STARTERS "
-        "lists are empty. Cannot run the advisor without round inputs.",
-        yaml_path,
-    )
-    sys.exit(1)
+def _latest_input_round() -> int | None:
+    rounds = [int(p.stem.split("_")[1]) for p in DATA_INPUTS.glob("round_*.yaml")]
+    return max(rounds) if rounds else None
 
 
 def run_advisor(round_num: int = None, no_scrape: bool = False,
                 max_trades: int = 2):
     """Run the full trade advisor pipeline."""
     if round_num is None:
-        round_num = CURRENT_ROUND
+        round_num = _latest_input_round()
+        if round_num is None:
+            log.error("No data/inputs/round_<N>.yaml files found.")
+            sys.exit(1)
 
     squad_input, starters_input = _load_round_inputs(round_num)
-    if not squad_input:
-        log.error("No squad found for round %d (check data/inputs/round_%d.yaml)",
-                  round_num, round_num)
-        sys.exit(1)
-    if not starters_input:
-        log.error("No confirmed starters for round %d", round_num)
-        sys.exit(1)
 
     # Step 1: Load player pool with predictions
     log.info("=" * 55)
@@ -1634,13 +1283,16 @@ def run_advisor(round_num: int = None, no_scrape: bool = False,
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(message)s",
+                        datefmt="%H:%M:%S")
     parser = argparse.ArgumentParser(
         description="NRL Supercoach Trade Advisor"
     )
     parser.add_argument("--no-scrape", action="store_true",
                         help="Use existing data instead of scraping fresh")
     parser.add_argument("--round", type=int, default=None,
-                        help="Round number (overrides CURRENT_ROUND)")
+                        help="Round number (default: latest data/inputs/round_<N>.yaml)")
     parser.add_argument("--max-trades", type=int, default=2,
                         help="Max trades to recommend (default: 2)")
     args = parser.parse_args()

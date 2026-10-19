@@ -5,8 +5,6 @@ A bug here means we'd recommend trades that produce structurally invalid
 squads (too many CTW, no FLB, etc.) — which Supercoach itself would
 reject when you tried to save the team.
 """
-import pytest
-
 from planner import validate_position_quotas
 
 

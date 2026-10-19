@@ -10,22 +10,19 @@ Usage:
 """
 
 import logging
-from pathlib import Path
 
 import pandas as pd
 import numpy as np
 import pulp
 
 from optimizer import (
-    select_team, INJURED_PLAYERS, SALARY_CAP, SQUAD_SIZE,
-    POSITION_QUOTAS, ACTIVE_QUOTAS, STARTING_SLOTS, BENCH_SLOTS,
-    _eligible_positions,
+    select_team, unavailable_players, SALARY_CAP, SQUAD_SIZE,
+    POSITION_QUOTAS, ACTIVE_QUOTAS, _eligible_positions,
 )
+from paths import OUTPUTS_DIR as OUTPUT_DIR
 from squad_state import origin_risk
 
 log = logging.getLogger(__name__)
-
-OUTPUT_DIR = Path("outputs")
 
 # ── Bye round schedule (2026 season) ─────────────────────────────────────────
 BYE_ROUNDS: dict[str, list[int]] = {
@@ -81,10 +78,7 @@ def is_on_bye(team: str, rnd: int) -> bool:
 
 def is_injured(player_name: str, rnd: int) -> bool:
     """Check if a player is injured/suspended for this round."""
-    for name, avail_round, _ in INJURED_PLAYERS:
-        if name == player_name and rnd < avail_round:
-            return True
-    return False
+    return player_name in unavailable_players(rnd)
 
 
 def is_available(player_name: str, team: str, rnd: int) -> bool:
@@ -767,7 +761,6 @@ def run_season_plan(df_pred: pd.DataFrame,
 def print_season_summary(state: dict):
     """Pretty-print the season plan to stdout."""
     round_results = state.get("round_results", [])
-    trade_log = state.get("trade_log", [])
     total = state.get("total_projected", 0)
     boosts = state.get("boosts_used", {})
 
@@ -783,7 +776,7 @@ def print_season_summary(state: dict):
     best_rnd = round_results[np.argmax(points_list)]
 
     print("\n" + "=" * 80)
-    print(f"  NRL SUPERCOACH BYE ROUND SEASON PLAN — 2026")
+    print("  NRL SUPERCOACH BYE ROUND SEASON PLAN — 2026")
     print(f"  Projected Season Total: {total:,.0f} pts  |  "
           f"Avg: {avg_pts:,.0f}/round")
     print(f"  Trades Used: {state.get('trades_used', 0)} / {TOTAL_TRADES}  |  "
@@ -811,14 +804,14 @@ def print_season_summary(state: dict):
 
     # Boost recommendations
     if boosts:
-        print(f"\n  TRADE BOOST RECOMMENDATIONS:")
+        print("\n  TRADE BOOST RECOMMENDATIONS:")
         for rnd in sorted(boosts):
             rr = next(r for r in round_results if r["round"] == rnd)
             val = rr.get("_best_rejected_trade_value", 0)
             print(f"    R{rnd}: Use boost for +1 trade (marginal value: {val:.1f})")
 
     print(f"\n  {'-' * 60}")
-    print(f"  SEASON SUMMARY")
+    print("  SEASON SUMMARY")
     print(f"  Total Projected Points:  {total:>8,.0f}")
     print(f"  Average per Round:       {avg_pts:>8,.0f}")
     print(f"  Best Round:              R{best_rnd['round']:02d} ({best_rnd['projected_points']:,.0f} pts)")

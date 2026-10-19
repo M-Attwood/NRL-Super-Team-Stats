@@ -14,14 +14,20 @@ Constraints:
   - Position quotas: HOK=2, FRF=4, 2RF=6, HFB=2, 5/8=2, CTW=7, FLB=2
   - Multi-position players fill exactly one quota slot
   - Injury coverage: each starting position has ≥1 extra eligible player
+
+Usage:
+    python optimizer.py --predictions outputs/predictions_round_10.csv --round 10
 """
 
 import logging
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
-import numpy as np
 import pulp
+import yaml
+
+from paths import DATA_INPUTS, OUTPUTS_DIR
 
 log = logging.getLogger(__name__)
 
@@ -31,85 +37,31 @@ SQUAD_SIZE = 26
 HARD_MAX_PER_TEAM = 5      # Hard cap: never more than this many from one team
 SOFT_MAX_PER_TEAM = 3      # Soft target: penalty applies above this threshold
 PENALTY_PER_PLAYER = 0.15  # Objective penalty per player over the soft target
+
+# Objective weights: (predicted points, team diversity, positional versatility).
+# Diversity and versatility hedge season-long bye / injury risk.
+SEASON_WEIGHTS = (0.75, 0.20, 0.05)
+POINTS_ONLY = (1.0, 0.0, 0.0)   # single-round pick with known team lists
 MIN_COVERAGE_DEPTH = 1     # Extra eligible players beyond quota, per starting position
 
-# Players injured or suspended — (name, available_from_round, reason)
-# Player is EXCLUDED when current_round < available_from_round
-INJURED_PLAYERS = [
-    # ── Season / indefinite ────────────────────────────────────────────
-    ("Katoa, Eliesa",       99, "Brain surgery — out for season"),
-    ("Perham, Hayze",       99, "Next season"),
-    ("Haas, Payne",          6, "Available R6"),
-    ("Thompson, Keaon",     99, "Indefinite"),
-    ("Ison, Liam",          99, "TBC"),
-    ("Volkman, Taine",      99, "TBC"),
-    ("Sua, Jaydn",           6, "Available R6"),
-    ("Schiller, Max",       99, "TBC"),
-    ("Arrow, Jai",          99, "Next season"),
-    ("Burns, Jack",         99, "TBC"),
+INJURIES_PATH = DATA_INPUTS / "injuries.yaml"
 
-    # ── Round 2+ ───────────────────────────────────────────────────────
-    ("Meaney, Matt",         2, "Round 2"),
-    ("McLean, Josh",         2, "Round 2"),
-    ("Martin, Tyrell",       2, "Round 2"),
 
-    # ── Round 3+ ───────────────────────────────────────────────────────
-    ("Turpin, Jake",          3, "Round 3"),
-    ("Tabuai-Fidow, Hamiso",  3, "Round 3"),
-    ("Henry, Liam",           3, "Round 3"),
+@lru_cache(maxsize=1)
+def _injury_list() -> tuple[tuple[str, int], ...]:
+    """(player, available_from_round) pairs from data/inputs/injuries.yaml."""
+    if not INJURIES_PATH.exists():
+        return ()
+    doc = yaml.safe_load(INJURIES_PATH.read_text(encoding="utf-8")) or {}
+    return tuple((e["player"], int(e["available_from"]))
+                 for e in doc.get("unavailable", []))
 
-    # ── Round 4+ ───────────────────────────────────────────────────────
-    ("Haas, Mitchell",       4, "Round 4"),
-    ("Tago, Brian",          4, "Round 4"),
-    ("Best, Jack",           4, "Round 4"),
-    ("McInnes, Cameron",     4, "Round 4"),
 
-    # ── Round 5+ ───────────────────────────────────────────────────────
-    ("Young, Alex",          5, "Round 5"),
+def unavailable_players(round_number: int) -> set[str]:
+    """Players listed as injured / suspended for this round."""
+    return {name for name, available_from in _injury_list()
+            if round_number < available_from}
 
-    # ── Round 6+ ───────────────────────────────────────────────────────
-    ("Watson, Zac",          6, "Round 6"),
-    ("Grant, Harry",         6, "Round 6"),
-
-    # ── Round 7+ ───────────────────────────────────────────────────────
-    ("Walsh, Reece",          7, "Round 6 — not named in Broncos lineup"),
-    ("Barnett, Caleb",        7, "Round 7"),
-
-    # ── Round 8+ ───────────────────────────────────────────────────────
-    ("Turuva, Sunia",        6, "Available R6"),
-    ("Hampton, Tyson",       8, "Round 8"),
-    ("Wishart, Braydon",     8, "Round 8"),
-
-    # ── Round 10+ ──────────────────────────────────────────────────────
-    ("Coates, Xavier",       10, "Round 10"),
-    ("Mam, Ezra",             6, "Available R6"),
-    ("Crichton, Angus",       6, "Available R6"),
-    ("Hastings, Jackson",    10, "Round 10"),
-    ("Walker, Cody",          6, "Available R6"),
-
-    # ── Round 12+ ──────────────────────────────────────────────────────
-    ("Papali'i, Josh",        6, "Available R6"),
-    ("Hunt, Ben",             12, "Round 12"),
-
-    # ── Round 14+ ──────────────────────────────────────────────────────
-    ("Murray, Cameron",       6, "Available R6"),
-    ("Lomax, Zac",           14, "Round 14"),
-    ("Trbojevic, Tom",        6, "Available R6"),
-
-    # ── Round 16+ ──────────────────────────────────────────────────────
-    ("Luai, Jarome",         16, "Round 16"),
-
-    # ── Round 18+ ──────────────────────────────────────────────────────
-    ("Johnston, Alex",        6, "Available R6"),
-    ("Gutierrez, Soni Luke", 18, "Round 18"),
-    ("Cleary, Nathan",        6, "Available R6"),
-
-    # ── Trials (available Round 1) ─────────────────────────────────────
-    ("Wighton, Jack",         1, "Trials — available"),
-    ("Tedesco, James",        1, "Trials — available"),
-    ("Ponga, Kalyn",          1, "Trials — available"),
-    ("Holmes, Valentine",     1, "Trials — available"),
-]
 
 POSITION_QUOTAS = {
     "HOK": 2,
@@ -191,34 +143,39 @@ def _eligible_positions(positions_str: str) -> list[str]:
 # ── Core LP Solver ────────────────────────────────────────────────────────────
 
 def select_team(df: pd.DataFrame, round_number: int = 1,
-                salary_cap: int | None = None) -> dict:
+                salary_cap: int | None = None,
+                apply_injuries: bool = True,
+                weights: tuple[float, float, float] = SEASON_WEIGHTS,
+                team_penalty: float = PENALTY_PER_PLAYER) -> dict:
     """
     Run the PuLP linear program and return the selected squad.
 
-    df must contain: player_name, positions, team, price, predicted_points
+    df must contain: player_name, positions, team, price, predicted_points.
+    apply_injuries=False skips the injuries.yaml exclusions (used by the
+    season backtest, which compares strategies on equal footing).
+    weights / team_penalty: objective weights for (points, diversity,
+    versatility) and the per-player penalty above SOFT_MAX_PER_TEAM.
 
     Returns:
         {
             "starting_13": list of dicts,
             "bench_4":     list of dicts,
+            "flex_1":      list of dicts,
             "reserves_8":  list of dicts,
             "total_price": int,
             "solver_status": str,
+            "df":          selected players DataFrame,
         }
     """
     df = df.copy().reset_index(drop=True)
 
-    # Filter out players unavailable for this round (injured / suspended)
-    excluded_names = [
-        name for name, avail_round, _ in INJURED_PLAYERS
-        if round_number < avail_round
-    ]
-    if excluded_names:
-        before = len(df)
-        df = df[~df["player_name"].isin(excluded_names)].reset_index(drop=True)
-        excluded = before - len(df)
-        if excluded > 0:
-            log.info("Round %d: excluded %d injured/suspended player(s)", round_number, excluded)
+    if apply_injuries:
+        out = unavailable_players(round_number)
+        excluded = int(df["player_name"].isin(out).sum())
+        df = df[~df["player_name"].isin(out)].reset_index(drop=True)
+        if excluded:
+            log.info("Round %d: excluded %d injured/suspended player(s)",
+                     round_number, excluded)
 
     # Validate required columns
     required = {"player_name", "positions", "team", "predicted_points"}
@@ -238,14 +195,15 @@ def select_team(df: pd.DataFrame, round_number: int = 1,
             f"Only {len(df)} eligible players in pool — need at least {SQUAD_SIZE}"
         )
 
-    n = len(df)
     players = df.index.tolist()
 
     # Pre-compute objective weights (versatility requires _eligible, computed above)
     norm_pred   = _normalise(df["predicted_points"].fillna(0))
     diversity   = _compute_diversity_scores(df)
     versatility = _compute_versatility_scores(df)
-    objective_weight = 0.75 * norm_pred + 0.20 * diversity + 0.05 * versatility
+    w_points, w_diversity, w_versatility = weights
+    objective_weight = (w_points * norm_pred + w_diversity * diversity
+                        + w_versatility * versatility)
 
     # ── Decision variables ────────────────────────────────────────────────────
     prob = pulp.LpProblem("NRL_Supercoach_Optimizer", pulp.LpMaximize)
@@ -285,7 +243,7 @@ def select_team(df: pd.DataFrame, round_number: int = 1,
                        for p in reserve_assign[i])
             for i in players
         )
-        - PENALTY_PER_PLAYER * pulp.lpSum(over_excess[t] for t in teams)
+        - team_penalty * pulp.lpSum(over_excess[t] for t in teams)
     )
 
     # ── Constraints ───────────────────────────────────────────────────────────
@@ -347,7 +305,7 @@ def select_team(df: pd.DataFrame, round_number: int = 1,
 
     # ── Solve ─────────────────────────────────────────────────────────────────
     solver = pulp.PULP_CBC_CMD(msg=False)
-    status = prob.solve(solver)
+    prob.solve(solver)
     status_str = pulp.LpStatus[prob.status]
     log.info("Solver status: %s", status_str)
 
@@ -465,8 +423,6 @@ def print_team(result: dict):
         print(f"\nNo team selected. Solver status: {result.get('solver_status')}")
         return
 
-    display_cols = ["player_name", "assigned_position", "team", "price", "predicted_points"]
-
     def _row(p: dict) -> str:
         name  = p.get("player_name", "")[:22].ljust(22)
         pos   = p.get("assigned_position", "").ljust(5)
@@ -476,7 +432,7 @@ def print_team(result: dict):
         return f"  {name} {pos} {team} {price}  {pred}"
 
     print("\n" + "=" * 65)
-    print(f"  NRL SUPERCOACH OPTIMAL SQUAD")
+    print("  NRL SUPERCOACH OPTIMAL SQUAD")
     print(f"  Total Price: ${result['total_price']:,}  |  Cap: ${SALARY_CAP:,}")
     print("=" * 65)
 
@@ -500,13 +456,11 @@ def print_team(result: dict):
 
 
 def export_team(result: dict, round_number: int,
-                output_dir: str = "outputs") -> Path:
-    """
-    Export the selected squad to a CSV file.
-    Returns the output file path.
-    """
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    out_path = Path(output_dir) / f"team_round_{round_number}.csv"
+                output_dir: Path = OUTPUTS_DIR) -> Path:
+    """Export the selected squad to outputs/team_round_<N>.csv."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"team_round_{round_number}.csv"
 
     rows = []
     for group, label in [("starting_13", "Starting"),
@@ -527,7 +481,7 @@ def export_team(result: dict, round_number: int,
 
     df_out = pd.DataFrame(rows)
     df_out.to_csv(out_path, index=False)
-    log.info("Team exported → %s", out_path)
+    log.info("Team exported -> %s", out_path)
     return out_path
 
 
@@ -535,27 +489,16 @@ def export_team(result: dict, round_number: int,
 
 if __name__ == "__main__":
     import argparse
-    from scraper import scrape_full, update_historical_data
-    from model import clean_data, engineer_features, load_or_train_model, predict_next_round_scores
 
-    parser = argparse.ArgumentParser(description="Run the Supercoach optimizer standalone")
-    parser.add_argument("--data", default="data/processed/master_historical.csv")
-    parser.add_argument("--round", type=int, default=1, help="Round number for output filename")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    parser = argparse.ArgumentParser(description="Re-run the squad optimizer on saved predictions")
+    parser.add_argument("--predictions", required=True,
+                        help="CSV written by main.py (outputs/predictions_round_N.csv)")
+    parser.add_argument("--round", type=int, required=True)
+    parser.add_argument("--cap", type=int, default=SALARY_CAP)
     args = parser.parse_args()
 
-    data_path = Path(args.data)
-    if not data_path.exists():
-        log.info("No data found — scraping ...")
-        df_raw = scrape_full(year=2026, save=True)
-        df = update_historical_data(df_raw)
-    else:
-        df = pd.read_csv(data_path, low_memory=False)
-
-    df_clean = clean_data(df)
-    df_feat, _ = engineer_features(df_clean, fit_scaler=True)
-    load_or_train_model(df_feat)
-    df_pred = predict_next_round_scores(df_feat)
-
-    result = select_team(df_pred)
+    result = select_team(pd.read_csv(args.predictions), round_number=args.round,
+                         salary_cap=args.cap)
     print_team(result)
     export_team(result, args.round)

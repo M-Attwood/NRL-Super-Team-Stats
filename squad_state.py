@@ -32,13 +32,14 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
+from paths import DATA_DIR, DATA_INPUTS
+
 log = logging.getLogger(__name__)
 
-ORIGIN_WATCHLIST_PATH = Path("data") / "origin_watchlist.yaml"
+ORIGIN_WATCHLIST_PATH = DATA_DIR / "origin_watchlist.yaml"
 
 
 def _round_yaml_path(round_num: int) -> Path:
-    from paths import DATA_INPUTS
     return DATA_INPUTS / f"round_{round_num}.yaml"
 
 

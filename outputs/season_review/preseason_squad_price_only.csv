@@ -1,0 +1,27 @@
+role,player_name,assigned_position,team,start_price,predicted_points,season_avg_actual,games_actual,season_total
+Starting,"Brailey, Blayke",HOK,SHA,654400,654400.0,70,19,1327
+Starting,"Horsburgh, Corey",FRF,CBR,595700,595700.0,63,22,1377
+Starting,"Couchman, Toby",FRF,STG,588300,588300.0,71,22,1569
+Starting,"Faasuamaleaui, Tino",2RF,GCT,687600,687600.0,71,21,1489
+Starting,"Carrigan, Patrick",2RF,BRO,636900,636900.0,68,18,1232
+Starting,"Plath, Max",2RF,DOL,517100,517100.0,59,19,1117
+Starting,"Cleary, Nathan",HFB,PTH,826100,826100.0,93,21,1954
+Starting,"Campbell, Jayden",5/8,GCT,711400,711400.0,74,22,1636
+Starting,"Iro, KL",CTW,SHA,705900,705900.0,64,21,1350
+Starting,"Brimson, Alexander",CTW,GCT,649300,649300.0,47,22,1026
+Starting,"Sasagi, Simi",CTW,CBR,401400,401400.0,82,16,1312
+Starting,"Talakai, Siosifa",CTW,SHA,381900,381900.0,35,21,736
+Starting,"Sloan, Tyrell",FLB,STG,486500,486500.0,47,18,854
+Bench,"Donoghoe, Kurt",HOK,DOL,497000,497000.0,49,15,742
+Bench,"Papalii, Isaiah",FRF,PTH,579900,579900.0,72,23,1648
+Bench,"Gilbert, Tom",FRF,DOL,460600,460600.0,49,23,1130
+Bench,"Henry, Liam",2RF,PTH,452300,452300.0,63,15,946
+Flex,"Flanagan, Kyle",FLEX,STG,489000,489000.0,32,21,666
+Reserve,"Perham, Hayze",CTW,BRO,216800,216800.0,54,7,379
+Reserve,"Elliott, Jake",HFB,SYD,201400,201400.0,0,0,0
+Reserve,"Foley, Reece",5/8,SYD,201400,201400.0,10,2,19
+Reserve,"Martin, Myles",2RF,CBR,201400,201400.0,0,0,0
+Reserve,"Pasikala, Motu",FLB,NZL,201400,201400.0,0,0,0
+Reserve,"Ramsey, Cody",CTW,SYD,201400,201400.0,55,12,665
+Reserve,"Riki, Preston",2RF,BRO,201400,201400.0,38,10,377
+Reserve,"Walsh, James",CTW,NQC,201400,201400.0,0,0,0

@@ -1,60 +1,65 @@
-"""Regression tests for the model's biggest historical bug: the target
-column appearing in the feature matrix.
+"""Leakage tests for the next-game training pairs.
 
-If `avg_points` (or any aliased form) ends up in the feature list, the
-network can trivially memorise the target and report a misleadingly low
-validation MAE. This test pins the constants so a future edit to
-SCALE_COLS can't silently re-introduce the leak.
+The original model predicted a season's average from that same season's
+score components, which made validation R² look like 0.98. These tests pin
+the fix: a pair's features may only use games up to and including game k,
+and its target is the score in game k+1.
 """
 import pandas as pd
 
-from model import (
-    SCALE_COLS, ALL_POSITIONS, ALL_TEAMS, TARGET, derive_feature_cols,
-)
+from model import FEATURES, TARGET, build_training_pairs, split_season
 
 
-def test_target_column_not_in_scale_cols():
-    """If `avg_points` is the target, it must NOT be a feature."""
-    assert TARGET == "avg_points"
-    assert TARGET not in SCALE_COLS, (
-        f"TARGET column {TARGET!r} found in SCALE_COLS — this is the leak "
-        "the NN review caught. The model would memorise target=feature."
-    )
+def _season(year=2025, scores=(40, 60, 80, 100), player="Test, Player"):
+    rows = [{
+        "player_name": player, "current_round": f"{i + 1:02d}", "team": "MEL",
+        "positions": "HOK", "total_points": s, "total_minutes": 80,
+        "price": 500_000, "jersey_number": 9, "vs_team": "BRO",
+    } for i, s in enumerate(scores)]
+    rows.append({"player_name": player, "current_round": "Totals", "team": "MEL",
+                 "positions": "HOK", "total_points": sum(scores),
+                 "avg_points": sum(scores) / len(scores), "games_played": len(scores),
+                 "price": 500_000, "start_price": 500_000})
+    return split_season(pd.DataFrame(rows), year)
 
 
-def test_derive_feature_cols_excludes_target():
-    """derive_feature_cols must never return the target column even if
-    avg_points happens to exist in the input dataframe."""
-    df = pd.DataFrame({
-        "avg_points": [50, 60, 70],          # the target — must be excluded
-        "avg_last3":  [48, 58, 68],          # legitimate feature
-        "positions": ["HOK", "FRF", "CTW"],
-        "team":      ["MEL", "PTH", "BRO"],
-    })
-    cols = derive_feature_cols(df)
-    assert TARGET not in cols
-    assert "avg_last3" in cols  # sanity: legit feature still there
+def _pairs(scores):
+    rounds, totals = _season(scores=scores)
+    return build_training_pairs(rounds, {2025: totals}).sort_values("round")
 
 
-def test_all_teams_match_real_data_codes():
-    """The hardcoded team list previously had codes ('BRI', 'CBY', ...)
-    that didn't appear in the scraper's output, leaving 13/17 team
-    one-hots permanently zero. Pin the canonical list here."""
-    expected = {"BRO", "BUL", "CBR", "DOL", "GCT", "MEL", "MNL", "NEW",
-                "NQC", "NZL", "PAR", "PTH", "SHA", "STG", "STH", "SYD", "WST"}
-    assert set(ALL_TEAMS) == expected, (
-        f"ALL_TEAMS drift detected. Missing: {expected - set(ALL_TEAMS)}, "
-        f"extras: {set(ALL_TEAMS) - expected}"
-    )
-    assert len(ALL_TEAMS) == 17
+def test_target_is_not_a_feature():
+    assert TARGET not in FEATURES
+    assert "score" not in FEATURES
 
 
-def test_position_features_cover_all_positions():
-    """Every position in ALL_POSITIONS must produce a stable feature
-    column name (the `5/8` slash is the trap that would produce a path
-    component if anyone forgets to escape it)."""
-    df = pd.DataFrame({"positions": ["5/8", "HOK"]})
-    cols = derive_feature_cols(df)
-    for pos in ALL_POSITIONS:
-        safe_col = f"pos_{pos.replace('/', '_').replace(' ', '_')}"
-        assert safe_col in cols, f"missing position column for {pos}"
+def test_target_is_the_next_game():
+    pairs = _pairs((40, 60, 80, 100))
+    assert list(pairs[TARGET]) == [60, 80, 100]
+    assert list(pairs["next_round"]) == [2, 3, 4]
+
+
+def test_features_only_use_games_played_so_far():
+    pairs = _pairs((40, 60, 80, 100))
+    first = pairs.iloc[0]          # state after game 1, predicting game 2
+    assert first["season_avg"] == 40
+    assert first["games_played"] == 1
+    second = pairs.iloc[1]         # state after games 1-2
+    assert second["season_avg"] == 50
+    assert second["last1"] == 60
+
+
+def test_changing_a_future_score_never_changes_earlier_features():
+    a = _pairs((40, 60, 80, 100))
+    b = _pairs((40, 60, 80, 5))    # only the final game differs
+    pd.testing.assert_frame_equal(
+        a[FEATURES].iloc[:2].reset_index(drop=True),
+        b[FEATURES].iloc[:2].reset_index(drop=True))
+
+
+def test_five_eighth_position_is_not_split_on_slash():
+    rounds, totals = _season()
+    rounds["positions"] = "5/8"
+    pairs = build_training_pairs(rounds, {2025: totals})
+    assert (pairs["pos_5_8"] == 1).all()
+    assert (pairs[["pos_HOK", "pos_FLB"]] == 0).all().all()

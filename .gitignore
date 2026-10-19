@@ -6,14 +6,17 @@ __pycache__/
 env/
 venv/
 *.egg-info/
+.pytest_cache/
 
-# IDE / OS
+# IDE / OS / local tooling
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
 
-# Debug / scratch
+# Local scratch and retired files (not part of the project)
+_archive/
 debug_*.html
 *.log
 

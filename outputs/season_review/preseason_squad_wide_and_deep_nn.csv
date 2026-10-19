@@ -1,0 +1,27 @@
+role,player_name,assigned_position,team,start_price,predicted_points,season_avg_actual,games_actual,season_total
+Starting,"Cook, Damien",HOK,STG,526500,57.0,52,23,1197
+Starting,"Faasuamaleaui, Tino",FRF,GCT,687600,65.8,71,21,1489
+Starting,"Fonua-Blake, Addin",FRF,SHA,638900,64.8,59,21,1247
+Starting,"Crichton, Angus",2RF,SYD,610200,67.5,59,13,762
+Starting,"Yeo, Isaah",2RF,PTH,610100,63.8,67,18,1213
+Starting,"Nikora, Briton",2RF,SHA,570100,60.7,51,19,968
+Starting,"Hynes, Nicholas",HFB,SHA,749300,72.7,97,20,1933
+Starting,"Campbell, Jayden",5/8,GCT,711400,74.9,74,22,1636
+Starting,"Isaako, Jamayne",CTW,DOL,609200,69.8,78,24,1866
+Starting,"Nicoll-Klokstad, Charnze",CTW,NZL,521600,65.6,67,14,941
+Starting,"Brimson, Alexander",CTW,GCT,649300,62.1,47,22,1026
+Starting,"Fale, David",CTW,STG,235600,45.2,39,2,77
+Starting,"Tabuai-Fidow, Hamiso",FLB,DOL,702300,71.0,68,19,1296
+Bench,"Fineanganofo, John",HOK,DOL,201400,29.5,5,1,5
+Bench,"Carrigan, Patrick",FRF,BRO,636900,63.7,68,18,1232
+Bench,"Papalii, Isaiah",FRF,PTH,579900,54.9,72,23,1648
+Bench,"Tsougranis, Nick",2RF,STG,235600,41.5,0,0,0
+Flex,"Cleary, Nathan",FLEX,PTH,826100,81.0,93,21,1954
+Reserve,"Price, Riley",2RF,NZL,201400,33.9,22,1,22
+Reserve,"Elliott, Jake",5/8,SYD,201400,29.5,0,0,0
+Reserve,"Herdegen, Zac",HFB,NQC,201400,29.5,0,0,0
+Reserve,"Nanva, Araz",FLB,PAR,201400,29.5,50,3,150
+Reserve,"Ramsey, Cody",CTW,SYD,201400,29.5,55,12,665
+Reserve,"Pasikala, Motu",CTW,NZL,201400,29.5,0,0,0
+Reserve,"Walsh, James",CTW,NQC,201400,29.5,0,0,0
+Reserve,"Lawton, Karl",2RF,NQC,235600,27.6,0,0,0

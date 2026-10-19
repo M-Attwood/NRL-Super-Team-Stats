@@ -1,0 +1,50 @@
+# Players unavailable for selection, maintained by hand during the season.
+# A player is excluded from the optimizer and planner while round < available_from.
+# available_from: 99 means out for the season.
+unavailable:
+  - {player: "Katoa, Eliesa", available_from: 99, note: "Brain surgery — out for season"}
+  - {player: "Perham, Hayze", available_from: 99, note: "Next season"}
+  - {player: "Haas, Payne", available_from: 6, note: "Available R6"}
+  - {player: "Thompson, Keaon", available_from: 99, note: "Indefinite"}
+  - {player: "Ison, Liam", available_from: 99, note: "TBC"}
+  - {player: "Volkman, Taine", available_from: 99, note: "TBC"}
+  - {player: "Sua, Jaydn", available_from: 6, note: "Available R6"}
+  - {player: "Schiller, Max", available_from: 99, note: "TBC"}
+  - {player: "Arrow, Jai", available_from: 99, note: "Next season"}
+  - {player: "Burns, Jack", available_from: 99, note: "TBC"}
+  - {player: "Meaney, Matt", available_from: 2, note: "Round 2"}
+  - {player: "McLean, Josh", available_from: 2, note: "Round 2"}
+  - {player: "Martin, Tyrell", available_from: 2, note: "Round 2"}
+  - {player: "Turpin, Jake", available_from: 3, note: "Round 3"}
+  - {player: "Tabuai-Fidow, Hamiso", available_from: 3, note: "Round 3"}
+  - {player: "Henry, Liam", available_from: 3, note: "Round 3"}
+  - {player: "Haas, Mitchell", available_from: 4, note: "Round 4"}
+  - {player: "Tago, Brian", available_from: 4, note: "Round 4"}
+  - {player: "Best, Jack", available_from: 4, note: "Round 4"}
+  - {player: "McInnes, Cameron", available_from: 4, note: "Round 4"}
+  - {player: "Young, Alex", available_from: 5, note: "Round 5"}
+  - {player: "Watson, Zac", available_from: 6, note: "Round 6"}
+  - {player: "Grant, Harry", available_from: 6, note: "Round 6"}
+  - {player: "Walsh, Reece", available_from: 7, note: "Round 6 — not named in Broncos lineup"}
+  - {player: "Barnett, Caleb", available_from: 7, note: "Round 7"}
+  - {player: "Turuva, Sunia", available_from: 6, note: "Available R6"}
+  - {player: "Hampton, Tyson", available_from: 8, note: "Round 8"}
+  - {player: "Wishart, Braydon", available_from: 8, note: "Round 8"}
+  - {player: "Coates, Xavier", available_from: 10, note: "Round 10"}
+  - {player: "Mam, Ezra", available_from: 6, note: "Available R6"}
+  - {player: "Crichton, Angus", available_from: 6, note: "Available R6"}
+  - {player: "Hastings, Jackson", available_from: 10, note: "Round 10"}
+  - {player: "Walker, Cody", available_from: 6, note: "Available R6"}
+  - {player: "Papali'i, Josh", available_from: 6, note: "Available R6"}
+  - {player: "Hunt, Ben", available_from: 12, note: "Round 12"}
+  - {player: "Murray, Cameron", available_from: 6, note: "Available R6"}
+  - {player: "Lomax, Zac", available_from: 14, note: "Round 14"}
+  - {player: "Trbojevic, Tom", available_from: 6, note: "Available R6"}
+  - {player: "Luai, Jarome", available_from: 16, note: "Round 16"}
+  - {player: "Johnston, Alex", available_from: 6, note: "Available R6"}
+  - {player: "Gutierrez, Soni Luke", available_from: 18, note: "Round 18"}
+  - {player: "Cleary, Nathan", available_from: 6, note: "Available R6"}
+  - {player: "Wighton, Jack", available_from: 1, note: "Trials — available"}
+  - {player: "Tedesco, James", available_from: 1, note: "Trials — available"}
+  - {player: "Ponga, Kalyn", available_from: 1, note: "Trials — available"}
+  - {player: "Holmes, Valentine", available_from: 1, note: "Trials — available"}

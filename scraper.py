@@ -1,20 +1,25 @@
 """
-scraper.py — NRL Supercoach Stats scraper
-Data source: jqGrid JSON API at https://www.nrlsupercoachstats.com/stats.php
+scraper.py — NRL Supercoach stats scraper.
+
+Data source: the jqGrid JSON endpoint behind nrlsupercoachstats.com/stats.php.
+One request page returns up to 200 rows; each row is a single player-round
+snapshot (that round's score, minutes and stat line, plus season-to-date
+aggregates), and every player also has one "Totals" row for the season.
+
+Usage:
+    python scraper.py --year 2026        # scrape one season to data/raw/
 """
 
-import re
-import time
-import random
 import logging
+import random
+import time
 from datetime import date
-from pathlib import Path
 
-import requests
 import pandas as pd
-from bs4 import BeautifulSoup
+import requests
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+from paths import DATA_RAW
+
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://www.nrlsupercoachstats.com"
@@ -28,7 +33,9 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
 ]
 
-# API field → clean column name
+# API field -> clean column name. For per-round rows `total_points` and
+# `total_minutes` are that round's score and minutes; on the "Totals" row
+# they are season totals.
 API_COLUMN_MAP = {
     "id":               "player_id",
     "Name2":            "player_name",      # plain-text "LastName, FirstName"
@@ -51,7 +58,7 @@ API_COLUMN_MAP = {
     "BasePowerPPM":     "base_power_ppm",
     "BasePower":        "base_power_pts",
     "BasePowerAvg":     "avg_base_power",
-    "SeasonPriceChange":"season_price_change",
+    "SeasonPriceChange": "season_price_change",
     "RoundPriceChange": "round_price_change",
     "StartPrice":       "start_price",
     "EndPrice":         "end_price",
@@ -119,31 +126,24 @@ API_COLUMN_MAP = {
     "SS":               "stat_sinbin",
 }
 
-# Columns to drop (HTML markup / duplicates we don't need)
+# HTML markup / duplicate fields returned by the API that we don't keep.
 DROP_COLS = {"Name", "Team2", "Photo", "Namedot", "Posn", "Year",
              "Time", "Played", "_posn1", "_posn2"}
 
-from paths import DATA_RAW, DATA_ROUNDS, DATA_PROCESSED
 
-
-def _ensure_dirs():
-    for d in [DATA_RAW, DATA_ROUNDS, DATA_PROCESSED]:
-        d.mkdir(parents=True, exist_ok=True)
-
-
-def _session() -> requests.Session:
+def _session(year: int) -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": random.choice(USER_AGENTS),
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "X-Requested-With": "XMLHttpRequest",
-        "Referer": f"{BASE_URL}/stats.php?year=2026",
+        "Referer": f"{BASE_URL}/stats.php?year={year}",
     })
     return s
 
 
 def _get_retry(session: requests.Session, url: str, params: dict,
                max_retries: int = 3) -> requests.Response:
+    """GET with a rotating user-agent, polite jitter and exponential backoff."""
     delay = 1
     for attempt in range(max_retries):
         try:
@@ -152,653 +152,127 @@ def _get_retry(session: requests.Session, url: str, params: dict,
             r.raise_for_status()
             time.sleep(random.uniform(0.8, 1.5))
             return r
-        except (requests.RequestException, ValueError) as exc:
-            # RequestException covers timeouts, connection errors, HTTP errors
-            # raised by raise_for_status. ValueError covers JSON decode issues
-            # if a caller chains .json() on the response. Bugs in our own code
-            # (TypeError, AttributeError) should propagate, not be retried.
+        except requests.RequestException as exc:
             log.warning("Attempt %d/%d failed: %s", attempt + 1, max_retries, exc)
             time.sleep(delay)
             delay *= 2
     raise RuntimeError(f"All retries failed for {url}")
 
 
-# ── Main Stats Table (JSON API) ───────────────────────────────────────────────
-
-def scrape_main_stats(year: int = 2026, rows_per_page: int = 200) -> pd.DataFrame:
-    """
-    Scrape the full player stats table via the jqGrid JSON API.
-    Returns a clean DataFrame with all available columns.
-    """
-    log.info("Scraping main stats JSON API for year %d ...", year)
-    session = _session()
-    all_rows = []
-    page = 1
+def scrape_season(year: int, rows_per_page: int = 200) -> pd.DataFrame:
+    """Scrape every player-round row for one season via the JSON API."""
+    log.info("Scraping %d season from the stats API ...", year)
+    session = _session(year)
+    all_rows, page = [], 1
 
     while True:
         params = {
-            "year":         year,
-            "grid_id":      "list1",
-            "jqgrid_page":  page,
-            "rows":         rows_per_page,
-            "sidx":         "Name",
-            "sord":         "asc",
-            "_search":      "false",
+            "year": year, "grid_id": "list1", "jqgrid_page": page,
+            "rows": rows_per_page, "sidx": "Name", "sord": "asc",
+            "_search": "false",
         }
-        r = _get_retry(session, STATS_URL, params)
-
-        try:
-            data = r.json()
-        except ValueError:
-            log.error("Response is not JSON on page %d. First 500 chars:\n%s",
-                      page, r.text[:500])
-            break
-
+        data = _get_retry(session, STATS_URL, params).json()
         rows = data.get("rows", [])
-        total_pages = int(data.get("total", 1))
-        total_records = data.get("records", "?")
-
         if not rows:
             break
-
         all_rows.extend(rows)
-        log.info("Page %d/%d: %d rows (total records: %s)",
-                 page, total_pages, len(rows), total_records)
-
+        total_pages = int(data.get("total", 1))
+        log.info("Page %d/%d: %d rows (%s records)", page, total_pages,
+                 len(rows), data.get("records", "?"))
         if page >= total_pages:
             break
         page += 1
 
     if not all_rows:
-        log.error("No rows returned from API")
         return pd.DataFrame()
 
     df = pd.DataFrame(all_rows)
-
-    # ── Rename API fields to clean names ──────────────────────────────────────
     df = df.rename(columns={k: v for k, v in API_COLUMN_MAP.items() if k in df.columns})
 
-    # ── Build positions column from Posn1 / Posn2 ────────────────────────────
+    # Positions are stored pipe-separated ("2RF|FRF"). Never split on "/" —
+    # "5/8" (five-eighth) is a position name, not a separator.
     posn1 = df.get("_posn1", pd.Series("", index=df.index)).fillna("").str.strip()
     posn2 = df.get("_posn2", pd.Series("", index=df.index)).fillna("").str.strip()
-    df["positions"] = posn1.where(posn2 == "", posn1 + "|" + posn2)
-    df["positions"] = df["positions"].str.strip("|")
+    df["positions"] = posn1.where(posn2 == "", posn1 + "|" + posn2).str.strip("|")
 
-    # ── Drop unwanted columns ─────────────────────────────────────────────────
-    df = df.drop(columns=[c for c in DROP_COLS if c in df.columns], errors="ignore")
-
-    # ── Convert price to int ──────────────────────────────────────────────────
-    if "price" in df.columns:
-        df["price"] = pd.to_numeric(df["price"], errors="coerce").astype("Int64")
-
-    # ── Drop rows with no player name ─────────────────────────────────────────
-    if "player_name" in df.columns:
-        df = df[df["player_name"].str.strip().ne("") & df["player_name"].notna()]
-
+    df = df.drop(columns=[c for c in DROP_COLS if c in df.columns])
+    df["price"] = pd.to_numeric(df["price"], errors="coerce").astype("Int64")
+    df = df[df["player_name"].notna() & df["player_name"].str.strip().ne("")]
     df["scrape_date"] = str(date.today())
     df["scrape_year"] = year
 
-    log.info("Main stats: %d players, %d columns", len(df), len(df.columns))
+    log.info("Season %d: %d rows, %d players", year, len(df), df["player_name"].nunique())
     return df.reset_index(drop=True)
 
 
-# ── Per-round data (same API, filtering by round) ────────────────────────────
-
-def scrape_round_data(year: int = 2026, round_num: int = None) -> pd.DataFrame:
-    """
-    Scrape per-round scores from the API.
-    If round_num is None, scrapes every round available and pivots to wide format.
-    Returns a DataFrame: player_name × round_N columns.
-    """
-    session = _session()
-    session.headers["Referer"] = f"{BASE_URL}/stats.php?year={year}"
-
-    # Determine available rounds
-    rounds_to_fetch = [round_num] if round_num else list(range(1, 28))
-    records = {}  # player_name → {round_N: score}
-
-    for rd in rounds_to_fetch:
-        page = 1
-        while True:
-            params = {
-                "year":         year,
-                "grid_id":      "list1",
-                "jqgrid_page":  page,
-                "rows":         200,
-                "sidx":         "Name",
-                "sord":         "asc",
-                "_search":      "true",
-                "searchField":  "Rd",
-                "searchString": str(rd),
-                "searchOper":   "eq",
-            }
-            try:
-                r = _get_retry(session, STATS_URL, params)
-                data = r.json()
-            except (requests.RequestException, ValueError) as e:
-                log.debug("round %s page %d fetch/parse failed: %s", rd, page, e)
-                break
-
-            rows = data.get("rows", [])
-            total_pages = int(data.get("total", 1))
-
-            for row in rows:
-                name = row.get("Name2", "").strip()
-                score = row.get("Score", None)
-                mins  = row.get("Mins", None)
-                if name:
-                    if name not in records:
-                        records[name] = {}
-                    records[name][f"round_{rd}"] = score
-                    records[name][f"mins_{rd}"]  = mins
-
-            if page >= total_pages or not rows:
-                break
-            page += 1
-
-        log.info("Round %d: %d player records", rd, len(records))
-
-    if not records:
-        return pd.DataFrame()
-
-    df = pd.DataFrame.from_dict(records, orient="index")
-    df.index.name = "player_name"
-    df = df.reset_index()
-    df["year"] = year
-    return df
+def season_path(year: int):
+    return DATA_RAW / f"nrl_data_{year}.csv"
 
 
-# ── Individual Player Pages ───────────────────────────────────────────────────
-
-def _player_page_url(player_name_lastfirst: str, year: int) -> str:
-    """
-    Build player page URL from 'LastName, FirstName' format (as returned by API Name2).
-    e.g. "Addo-Carr, Josh" → .../index.php?player=Addo-Carr%2C+Josh&year=2026
-    """
-    encoded = player_name_lastfirst.replace(", ", "%2C+").replace(" ", "+")
-    return f"{BASE_URL}/index.php?player={encoded}&year={year}"
-
-
-def scrape_player_page(player_name_lastfirst: str, year: int = 2026,
-                       session: requests.Session = None) -> dict:
-    """
-    Scrape an individual player profile page for round-by-round history,
-    score distributions, and MACD data.
-    """
-    if session is None:
-        session = _session()
-
-    url = _player_page_url(player_name_lastfirst, year)
-    try:
-        r = _get_retry(session, url, params={})
-        html = r.text
-    except RuntimeError:
-        log.warning("Failed to scrape player page: %s %d", player_name_lastfirst, year)
-        return {}
-
-    soup = BeautifulSoup(html, "lxml")
-    data = {"player_name": player_name_lastfirst, "year": year}
-
-    # ── Extract round scores from chart data in <script> tags ────────────────
-    scripts = [s.string or "" for s in soup.find_all("script")]
-    for src in scripts:
-        # Look for round score arrays: typically like  data: [45, 62, 38, ...]
-        # or pointsByRound = [...]
-        arrays = re.findall(
-            r'(?:pointsByRound|scoreData|data)\s*[=:]\s*\[([^\]]+)\]', src
-        )
-        for arr_str in arrays:
-            items = [x.strip() for x in arr_str.split(",")]
-            if len(items) >= 3 and all(
-                re.match(r'^-?\d+(\.\d+)?$|^null$', x) for x in items[:5]
-            ):
-                for i, val in enumerate(items, start=1):
-                    key = f"round_{i}"
-                    if key not in data and val.lower() != "null":
-                        try:
-                            data[key] = float(val)
-                        except ValueError:
-                            pass
-
-        # Look for minutes arrays
-        min_arrays = re.findall(
-            r'(?:minutesByRound|minutesData|minsData)\s*[=:]\s*\[([^\]]+)\]', src
-        )
-        for arr_str in min_arrays:
-            items = [x.strip() for x in arr_str.split(",")]
-            for i, val in enumerate(items, start=1):
-                key = f"mins_{i}"
-                if key not in data and val.lower() != "null":
-                    try:
-                        data[key] = float(val)
-                    except ValueError:
-                        pass
-
-    # ── Score distribution from tables ───────────────────────────────────────
-    for tbl in soup.find_all("table"):
-        text = tbl.get_text(" ", strip=True)
-        if any(kw in text for kw in ["<20", "20-39", "40-59", "60+"]):
-            cells = [td.get_text(strip=True) for td in tbl.find_all("td")]
-            for j, cell in enumerate(cells):
-                if "<20" in cell and j + 1 < len(cells):
-                    data["count_u20"] = _safe_num(cells[j + 1])
-                elif "20-39" in cell and j + 1 < len(cells):
-                    data["count_20_39"] = _safe_num(cells[j + 1])
-                elif "40-59" in cell and j + 1 < len(cells):
-                    data["count_40_59"] = _safe_num(cells[j + 1])
-                elif "60+" in cell and j + 1 < len(cells):
-                    data["count_60plus"] = _safe_num(cells[j + 1])
-
-    return data
-
-
-def _safe_num(val: str):
-    try:
-        return float(str(val).replace(",", "").strip())
-    except (ValueError, AttributeError):
-        return None
-
-
-def scrape_all_player_pages(df_main: pd.DataFrame, year: int = 2026,
-                            historical: bool = False) -> pd.DataFrame:
-    """
-    Scrape individual pages for all players.
-    historical=True also scrapes seasons 2009 to (year-1).
-    """
-    players = df_main["player_name"].dropna().unique().tolist()
-    years_to_scrape = list(range(2009, year + 1)) if historical else [year]
-
-    session = _session()
-    session.headers["X-Requested-With"] = ""  # player pages are regular HTML
-    session.headers["Accept"] = "text/html,application/xhtml+xml,*/*"
-
-    all_records = []
-    total = len(players) * len(years_to_scrape)
-    count = 0
-
-    for yr in years_to_scrape:
-        for player in players:
-            count += 1
-            if count % 20 == 0:
-                log.info("[%d/%d] Scraping player pages ...", count, total)
-            record = scrape_player_page(player, yr, session)
-            if record:
-                all_records.append(record)
-
-    return pd.DataFrame(all_records) if all_records else pd.DataFrame()
-
-
-# ── Supplementary Pages ───────────────────────────────────────────────────────
-
-def _scrape_html_table(url: str, params: dict = None,
-                       session: requests.Session = None) -> pd.DataFrame:
-    """Generic helper: fetch a page, parse its first meaningful table."""
-    if session is None:
-        session = _session()
-    try:
-        r = _get_retry(session, url, params or {})
-    except RuntimeError:
-        return pd.DataFrame()
-
-    soup = BeautifulSoup(r.text, "lxml")
-    # Find the largest table (most rows) as the data table
-    tables = soup.find_all("table")
-    if not tables:
-        return pd.DataFrame()
-
-    best = max(tables, key=lambda t: len(t.find_all("tr")))
-    rows = best.find_all("tr")
-    if len(rows) < 2:
-        return pd.DataFrame()
-
-    headers = [th.get_text(strip=True) for th in rows[0].find_all(["th", "td"])]
-    records = []
-    for tr in rows[1:]:
-        cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-        if cells:
-            records.append(dict(zip(headers, cells)))
-    return pd.DataFrame(records)
-
-
-def scrape_minutes_grid(year: int = 2026, session=None) -> pd.DataFrame:
-    log.info("Scraping minutes grid ...")
-    df = _scrape_html_table(f"{BASE_URL}/minutes.php", {"year": year}, session)
-    log.info("Minutes grid: %d rows", len(df))
-    return df
-
-
-def scrape_dual_positions(year: int = 2026, session=None) -> pd.DataFrame:
-    log.info("Scraping dual position grid ...")
-    df = _scrape_html_table(f"{BASE_URL}/dualposngrid.php", {"year": year}, session)
-    log.info("Dual positions: %d rows", len(df))
-    return df
-
-
-def scrape_prices_and_bes(session=None) -> pd.DataFrame:
-    log.info("Scraping prices & BEs ...")
-    df = _scrape_html_table(f"{BASE_URL}/TeamPricesAndBEs.php", {}, session)
-    log.info("Prices & BEs: %d rows", len(df))
-    return df
-
-
-def scrape_draft_rankings(year: int = 2026, session=None) -> pd.DataFrame:
-    log.info("Scraping draft rankings ...")
-    df = _scrape_html_table(f"{BASE_URL}/draft.php", {"year": year}, session)
-    log.info("Draft rankings: %d rows", len(df))
-    return df
-
-
-def scrape_position_vs_team(year: int = 2026, session=None) -> pd.DataFrame:
-    log.info("Scraping position vs team ...")
-    df = _scrape_html_table(f"{BASE_URL}/posnvsteam.php", {"year": year}, session)
-    log.info("Position vs team: %d rows", len(df))
-    return df
-
-
-# ── Fixtures (NN-4 fixture wiring) ────────────────────────────────────────────
-#
-# To produce a real "next-opponent" feature we need a fixture table:
-# round → (home_team, away_team) per match. The site doesn't expose this in
-# the same JSON API the stats use, so we attempt a few likely page URLs and
-# fall back to a manual CSV the user can populate themselves.
-#
-# Output schema (data/raw/fixtures_<year>.csv):
-#   round (int), home_team (3-char code), away_team (3-char code), date (optional)
-#
-# If both auto-scrape and manual file fail, model.build_prediction_features
-# degrades gracefully: it leaves vs_team as the historical value and the
-# def_ppm_conceded feature still reflects last-played-opponent strength.
-
-_FIXTURE_URLS = [
-    # Best-effort candidate URLs, tried in order. Any of these returning a
-    # parseable HTML table with home/away columns is enough.
-    f"{BASE_URL}/draw.php",
-    f"{BASE_URL}/fixtures.php",
-    f"{BASE_URL}/schedule.php",
-]
-
-
-def _normalise_fixture_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Map common column-naming variants to round / home_team / away_team / date."""
+def load_season(year: int, scrape_if_missing: bool = True,
+                force_scrape: bool = False) -> pd.DataFrame:
+    """Return one season's rows, from the CSV cache or a fresh scrape."""
+    path = season_path(year)
+    if path.exists() and not force_scrape:
+        return pd.read_csv(path, low_memory=False)
+    if not (scrape_if_missing or force_scrape):
+        raise FileNotFoundError(f"{path} not found — run without --no-scrape")
+    df = scrape_season(year)
     if df.empty:
-        return df
-    rename_map = {}
-    for col in df.columns:
-        c = str(col).lower().strip()
-        if c in {"round", "rd", "round#", "rnd"} and "round" not in rename_map.values():
-            rename_map[col] = "round"
-        elif "home" in c and "home_team" not in rename_map.values():
-            rename_map[col] = "home_team"
-        elif ("away" in c or "visitor" in c) and "away_team" not in rename_map.values():
-            rename_map[col] = "away_team"
-        elif c in {"date", "kickoff", "start"} and "date" not in rename_map.values():
-            rename_map[col] = "date"
-    df = df.rename(columns=rename_map)
-    needed = {"round", "home_team", "away_team"}
-    if not needed.issubset(df.columns):
-        return pd.DataFrame()
-    keep = ["round", "home_team", "away_team"] + (["date"] if "date" in df.columns else [])
-    df = df[keep].copy()
+        raise RuntimeError(f"Scraper returned no rows for {year}")
+    DATA_RAW.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    log.info("Saved %d rows -> %s", len(df), path)
+    return df
+
+
+# ── Fixtures ─────────────────────────────────────────────────────────────────
+# data/raw/fixtures_<year>.csv: round, home_team, away_team[, date]
+# Team codes match planner.BYE_ROUNDS (BRO, BUL, CBR, ...).
+
+def load_fixtures(year: int) -> pd.DataFrame:
+    """Load the season draw, or an empty frame if no fixture file exists."""
+    path = DATA_RAW / f"fixtures_{year}.csv"
+    if not path.exists():
+        log.warning("No fixture file at %s — next-opponent features fall back "
+                    "to league average.", path)
+        return pd.DataFrame(columns=["round", "home_team", "away_team"])
+    df = pd.read_csv(path)
     df["round"] = pd.to_numeric(df["round"], errors="coerce").astype("Int64")
-    df = df.dropna(subset=["round", "home_team", "away_team"])
-    df["home_team"] = df["home_team"].astype(str).str.upper().str.strip()
-    df["away_team"] = df["away_team"].astype(str).str.upper().str.strip()
-    return df.reset_index(drop=True)
-
-
-def scrape_fixtures(year: int = 2026, save: bool = True,
-                    session: requests.Session = None) -> pd.DataFrame:
-    """Return the season fixture as round / home_team / away_team rows.
-
-    Resolution order:
-      1. data/raw/fixtures_<year>.csv (if present — manual override or cache).
-      2. Best-effort scrape of nrlsupercoachstats.com pages (draw, fixtures,
-         schedule). Site URL patterns are guesses; if they don't return a
-         parseable table the function returns an empty DataFrame.
-
-    The downstream feature builder degrades gracefully if this returns
-    empty: predictions still work, just without next-opponent strength.
-    To use without scraping, drop a CSV at data/raw/fixtures_<year>.csv
-    with columns: round, home_team, away_team [, date]. Team codes must
-    match planner.BYE_ROUNDS (BRO, BUL, CBR, ...).
-    """
-    fixture_path = DATA_RAW / f"fixtures_{year}.csv"
-    if fixture_path.exists():
-        try:
-            df = pd.read_csv(fixture_path)
-            df = _normalise_fixture_columns(df)
-            if not df.empty:
-                log.info("Loaded %d fixture rows from %s", len(df), fixture_path)
-                return df
-            log.warning("%s exists but couldn't be parsed; re-scraping", fixture_path)
-        except OSError as e:
-            log.warning("Couldn't read %s: %s", fixture_path, e)
-
-    if session is None:
-        session = _session()
-        session.headers["X-Requested-With"] = ""
-        session.headers["Accept"] = "text/html,application/xhtml+xml,*/*"
-
-    for url in _FIXTURE_URLS:
-        df_raw = _scrape_html_table(url, {"year": year}, session)
-        if df_raw.empty:
-            continue
-        df = _normalise_fixture_columns(df_raw)
-        if df.empty:
-            continue
-        if save:
-            DATA_RAW.mkdir(parents=True, exist_ok=True)
-            df.to_csv(fixture_path, index=False)
-            log.info("Fixtures saved: %d rows → %s (source %s)",
-                     len(df), fixture_path, url)
-        return df
-
-    log.warning(
-        "No fixture data found. Tried: %s. To enable next-opponent features, "
-        "drop a CSV at %s with columns round, home_team, away_team.",
-        ", ".join(_FIXTURE_URLS), fixture_path,
-    )
-    return pd.DataFrame()
+    for col in ("home_team", "away_team"):
+        df[col] = df[col].astype(str).str.upper().str.strip()
+    return df.dropna(subset=["round"])
 
 
 def get_next_opponent(team: str, current_round: int,
-                       fixtures: pd.DataFrame) -> tuple[str | None, bool]:
-    """Look up the round-`current_round` opponent of `team`.
+                      fixtures: pd.DataFrame) -> tuple[str | None, bool]:
+    """Return (opponent_code, is_home) for `team` in `current_round`.
 
-    Returns (opponent_code, is_home). Returns (None, False) when the team
-    has a bye, the round isn't in the fixture, or no fixture is available.
+    (None, False) when the team has a bye or the round isn't in the fixture.
     """
-    if fixtures is None or fixtures.empty or "round" not in fixtures.columns:
+    if fixtures is None or fixtures.empty:
         return None, False
-    team_upper = str(team).upper().strip()
-    rnd_rows = fixtures[fixtures["round"] == current_round]
-    home = rnd_rows[rnd_rows["home_team"].str.upper() == team_upper]
+    team = str(team).upper().strip()
+    rnd = fixtures[fixtures["round"] == current_round]
+    home = rnd[rnd["home_team"] == team]
     if not home.empty:
-        return str(home.iloc[0]["away_team"]).upper(), True
-    away = rnd_rows[rnd_rows["away_team"].str.upper() == team_upper]
+        return home.iloc[0]["away_team"], True
+    away = rnd[rnd["away_team"] == team]
     if not away.empty:
-        return str(away.iloc[0]["home_team"]).upper(), False
+        return away.iloc[0]["home_team"], False
     return None, False
 
-
-# ── Historical Master ─────────────────────────────────────────────────────────
-
-def update_historical_data(new_df: pd.DataFrame,
-                           processed_path: str = "data/processed/master_historical.csv"
-                           ) -> pd.DataFrame:
-    path = Path(processed_path)
-    if path.exists():
-        existing = pd.read_csv(path, low_memory=False)
-        log.info("Loaded existing historical data: %d rows", len(existing))
-        combined = pd.concat([existing, new_df], ignore_index=True)
-    else:
-        combined = new_df.copy()
-
-    # Dedup by (player_name, scrape_year) — one row per player per season
-    if "player_name" in combined.columns and "scrape_year" in combined.columns:
-        combined = combined.drop_duplicates(
-            subset=["player_name", "scrape_year"], keep="last"
-        )
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_csv(path, index=False)
-    log.info("Historical data saved: %d rows → %s", len(combined), path)
-    return combined
-
-
-# ── Historical Season Scraper ─────────────────────────────────────────────────
-
-def scrape_historical_seasons(active_players: list,
-                              years: list = None,
-                              save: bool = True) -> pd.DataFrame:
-    """
-    Scrape full-season stats for prior years (default: 2024 and 2025).
-    Only retains rows for players currently active in the 2026 roster.
-
-    This gives the model real performance data to train on instead of
-    relying on the crude price-based fallback.
-
-    Args:
-        active_players: list of player_name strings from the 2026 scrape.
-        years: seasons to scrape (default [2024, 2025]).
-        save: whether to write CSVs to data/raw/.
-
-    Returns:
-        DataFrame with all historical rows (filtered to 2026-active players).
-    """
-    if years is None:
-        years = [2022, 2023, 2024, 2025]
-
-    active_set = set(active_players)
-    all_frames = []
-
-    for yr in sorted(years):
-        raw_path = DATA_RAW / f"nrl_data_{yr}.csv"
-        if raw_path.exists():
-            log.info("Loading cached historical data for %d from %s", yr, raw_path)
-            df_yr = pd.read_csv(raw_path, low_memory=False)
-        else:
-            log.info("Scraping historical season %d ...", yr)
-            df_yr = scrape_main_stats(year=yr)
-            if df_yr.empty:
-                log.warning("No data returned for year %d — skipping", yr)
-                continue
-            if save:
-                df_yr.to_csv(raw_path, index=False)
-                log.info("Saved %d rows → %s", len(df_yr), raw_path)
-
-        # API returns per-round snapshots (~15-25 per player). Keep only the
-        # season-total row per player. The season-total row has the same
-        # games_played as the last per-round row, so use total_points
-        # (cumulative > any single round) as tiebreaker.
-        if "player_name" in df_yr.columns and "games_played" in df_yr.columns:
-            df_yr["games_played"] = pd.to_numeric(df_yr["games_played"], errors="coerce").fillna(0)
-            if "total_points" in df_yr.columns:
-                df_yr["total_points"] = pd.to_numeric(df_yr["total_points"], errors="coerce").fillna(0)
-            before_dedup = len(df_yr)
-            sort_cols = ["games_played"] + (["total_points"] if "total_points" in df_yr.columns else [])
-            df_yr = (df_yr.sort_values(sort_cols, ascending=False)
-                          .drop_duplicates(subset=["player_name"], keep="first"))
-            log.info("Year %d: %d → %d rows after per-round dedup", yr, before_dedup, len(df_yr))
-
-        # Filter to 2026-active players only
-        before = len(df_yr)
-        if "player_name" in df_yr.columns:
-            df_yr = df_yr[df_yr["player_name"].isin(active_set)].copy()
-        log.info("Year %d: %d → %d (2026-active players)", yr, before, len(df_yr))
-
-        all_frames.append(df_yr)
-
-    if not all_frames:
-        return pd.DataFrame()
-
-    df_hist = pd.concat(all_frames, ignore_index=True)
-    log.info("Historical seasons total: %d rows across years %s", len(df_hist), years)
-    return df_hist
-
-
-# ── Full Orchestrated Scrape ──────────────────────────────────────────────────
-
-def scrape_full(year: int = 2026, historical: bool = False, save: bool = True) -> pd.DataFrame:
-    """
-    Run all scrapers and return the main stats DataFrame.
-    historical=True triggers a full history scrape of every player page back to 2009.
-    """
-    _ensure_dirs()
-    session = _session()
-
-    # 1. Main stats table (JSON API)
-    df_main = scrape_main_stats(year=year)
-    if df_main.empty:
-        log.error("Main stats scrape returned no data — aborting")
-        return df_main
-
-    # 2. Individual player pages for round-by-round data
-    log.info("Scraping individual player pages ...")
-    df_player_pages = scrape_all_player_pages(df_main, year=year, historical=historical)
-    if not df_player_pages.empty:
-        rounds_path = DATA_ROUNDS / f"round_scores_{year}.csv"
-        if rounds_path.exists():
-            existing_rounds = pd.read_csv(rounds_path, low_memory=False)
-            df_player_pages = pd.concat([existing_rounds, df_player_pages], ignore_index=True)
-            df_player_pages = df_player_pages.drop_duplicates(
-                subset=["player_name", "year"], keep="last"
-            )
-        df_player_pages.to_csv(rounds_path, index=False)
-        log.info("Round scores saved → %s", rounds_path)
-
-    # 3. Supplementary pages
-    df_minutes = scrape_minutes_grid(year=year, session=session)
-    df_dual    = scrape_dual_positions(year=year, session=session)
-    df_prices  = scrape_prices_and_bes(session=session)
-    df_draft   = scrape_draft_rankings(year=year, session=session)
-    df_pvt     = scrape_position_vs_team(year=year, session=session)
-
-    # Merge draft rank into main
-    if not df_draft.empty:
-        name_col = next((c for c in df_draft.columns if "name" in c.lower()), None)
-        rank_col = next((c for c in df_draft.columns if "rank" in c.lower()), None)
-        if name_col and rank_col:
-            df_main = df_main.merge(
-                df_draft[[name_col, rank_col]].rename(
-                    columns={name_col: "player_name", rank_col: "draft_rank"}
-                ),
-                on="player_name", how="left"
-            )
-
-    # Save supplementary
-    if not df_dual.empty:
-        df_dual.to_csv(DATA_RAW / f"dual_positions_{year}.csv", index=False)
-    if not df_minutes.empty:
-        df_minutes.to_csv(DATA_ROUNDS / f"minutes_grid_{year}.csv", index=False)
-    if not df_prices.empty:
-        df_prices.to_csv(DATA_RAW / f"prices_bes_{year}.csv", index=False)
-    if not df_pvt.empty:
-        df_pvt.to_csv(DATA_RAW / f"position_vs_team_{year}.csv", index=False)
-
-    # 4. Save main snapshot
-    if save:
-        raw_path = DATA_RAW / f"nrl_data_{date.today()}.csv"
-        df_main.to_csv(raw_path, index=False)
-        log.info("Main snapshot saved → %s", raw_path)
-
-    return df_main
-
-
-# ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="NRL Supercoach Stats Scraper")
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(message)s",
+                        datefmt="%H:%M:%S")
+    parser = argparse.ArgumentParser(description="NRL Supercoach stats scraper")
     parser.add_argument("--year", type=int, default=2026)
-    parser.add_argument("--historical", action="store_true")
-    parser.add_argument("--no-save", action="store_true")
     args = parser.parse_args()
 
-    df = scrape_full(year=args.year, historical=args.historical, save=not args.no_save)
-    if not df.empty:
-        print(f"\nCollected {len(df)} players, {len(df.columns)} columns")
-        show = ["player_name", "positions", "team", "price", "avg_points", "avg_last3"]
-        show = [c for c in show if c in df.columns]
-        print(df[show].head(15).to_string(index=False))
+    df = load_season(args.year, force_scrape=True)
+    totals = df[df["current_round"].astype(str) == "Totals"]
+    print(f"\n{args.year}: {len(df)} rows, {len(totals)} players")

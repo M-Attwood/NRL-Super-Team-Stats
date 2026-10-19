@@ -1,0 +1,7 @@
+,mae,rmse,r2,rank_corr
+Wide & Deep NN,17.0117,22.693,0.2355,0.5088
+Ridge regression,16.985,22.6517,0.2382,0.5124
+Season average,18.079,23.9614,0.1476,0.4772
+Last-3 average,19.0057,25.1656,0.0598,0.4526
+Price-implied,17.5043,23.2102,0.2002,0.48
+Hindsight oracle,15.926,21.1018,0.3389,0.5948

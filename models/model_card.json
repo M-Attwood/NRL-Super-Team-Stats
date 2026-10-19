@@ -1,0 +1,105 @@
+{
+  "target": "next-game Supercoach score",
+  "features": [
+    "season_avg",
+    "last1",
+    "last3_avg",
+    "last5_avg",
+    "season_std",
+    "games_played",
+    "mins_avg",
+    "mins_last3",
+    "mins_last1",
+    "ppm",
+    "last_started",
+    "last_benched",
+    "start_share",
+    "base_avg",
+    "attack_avg",
+    "create_avg",
+    "evade_avg",
+    "negative_avg",
+    "base_power_avg",
+    "tackles_avg",
+    "missed_tackles_avg",
+    "tackle_breaks_avg",
+    "line_breaks_avg",
+    "lb_assists_avg",
+    "offloads_avg",
+    "tries_avg",
+    "try_assists_avg",
+    "goals_avg",
+    "hitups_h8_avg",
+    "hitups_hu_avg",
+    "errors_avg",
+    "penalties_avg",
+    "price",
+    "break_even",
+    "season_price_change",
+    "prev_season_avg",
+    "prev_season_games",
+    "has_prev_season",
+    "team_factor",
+    "next_round",
+    "rounds_since_last",
+    "opp_factor",
+    "pos_HOK",
+    "pos_FRF",
+    "pos_2RF",
+    "pos_HFB",
+    "pos_5_8",
+    "pos_CTW",
+    "pos_FLB"
+  ],
+  "train_seasons": [
+    2022,
+    2023,
+    2024,
+    2025,
+    2026
+  ],
+  "train_games": 31691,
+  "price_baseline": [
+    7.854603589012769e-05,
+    13.872887761938767
+  ],
+  "holdout_season": 2026,
+  "holdout_metrics": {
+    "Wide & Deep NN": {
+      "mae": 17.01173306568301,
+      "rmse": 22.693031636285863,
+      "r2": 0.23545625435450823,
+      "rank_corr": 0.5087965705089608
+    },
+    "Ridge regression": {
+      "mae": 16.985043177227336,
+      "rmse": 22.65169784844323,
+      "r2": 0.2382388450212406,
+      "rank_corr": 0.5124177161809274
+    },
+    "Season average": {
+      "mae": 18.079024363398965,
+      "rmse": 23.96138482985011,
+      "r2": 0.14760453382957572,
+      "rank_corr": 0.4772425075734704
+    },
+    "Last-3 average": {
+      "mae": 19.005722907236876,
+      "rmse": 25.165638090028562,
+      "r2": 0.05977196588822731,
+      "rank_corr": 0.4526365496099487
+    },
+    "Price-implied": {
+      "mae": 17.504309716612333,
+      "rmse": 23.210249188858786,
+      "r2": 0.20020827021031629,
+      "rank_corr": 0.4800105997320576
+    },
+    "Hindsight oracle": {
+      "mae": 15.925962413067616,
+      "rmse": 21.10178917232022,
+      "r2": 0.3389171935070743,
+      "rank_corr": 0.5947995460725135
+    }
+  }
+}

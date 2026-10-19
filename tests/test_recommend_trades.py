@@ -7,9 +7,8 @@ deserves the most scrutiny. We test the two failure modes that matter:
   must be rejected, even if the points-gain looks great).
 """
 import pandas as pd
-import pytest
 
-from trade_advisor import recommend_trades, build_squad_dicts, resolve_names
+from trade_advisor import recommend_trades
 
 
 def _player(name, pos, price=300_000, pts=50.0, team="MEL"):

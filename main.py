@@ -1,378 +1,150 @@
 """
-main.py — NRL Supercoach Optimizer pipeline
+main.py — weekly NRL Supercoach pipeline.
 
-Workflow each round:
-  1. Scrape 2026 player data
-  1b. Load or scrape 2022-2025 historical data (filtered to 2026-active players)
-  2. Merge all data into master historical CSV
-  3. Clean and engineer features
-  4. Train model on 2022-2025 data (rows where avg_points > 0)
-  5. Predict 2026 scores using historical stats as feature basis
-  6. Run the PuLP optimizer
-  7. Print and export the optimal squad
+  1. Scrape the current season (earlier seasons load from data/raw/ cache)
+  2. Build next-game training pairs; evaluate + train the model if needed
+  3. Predict every player's score for the upcoming round
+  4. Solve the squad linear program -> outputs/team_round_<N>.csv
+  5. Optionally plan byes and trades for the rest of the season
 
 Usage:
-    python main.py                          # standard weekly update
-    python main.py --historical             # first-run: bootstrap player page history
-    python main.py --no-scrape             # skip 2026 scraping, use existing data
-    python main.py --rescrape-history      # force re-scrape of 2022-2025 even if cached
-    python main.py --retrain               # force full model retrain from scratch
-    python main.py --round 5              # manually set round number
-    python main.py --year 2026            # season year (default: 2026)
+    python main.py                  # scrape, predict the next round, pick a squad
+    python main.py --no-scrape      # use cached data
+    python main.py --round 10       # replay a round using only data known before it
+    python main.py --retrain        # re-evaluate and retrain the model first
+    python main.py --plan           # also run the season bye/trade planner
+
+After round 27 the season is over: run `python season_review.py` instead.
 """
 
 import argparse
 import logging
 import sys
-from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+from paths import OUTPUTS_DIR
+
 log = logging.getLogger(__name__)
 
-# Historical seasons used for model training. The 2026 (current) season is
-# scraped separately and merged in. Going back to 2022 gives ~4 years of data,
-# which is plenty for the position-conditioned features we build.
-_HIST_START_YEAR = 2022
+FIRST_SEASON = 2022    # first season of history used for training
+TOTAL_ROUNDS = 27
 
 
-def _historical_years(current_season: int) -> list[int]:
-    """All complete seasons before the current one, going back to _HIST_START_YEAR."""
-    return list(range(_HIST_START_YEAR, current_season))
+def load_data(year: int, no_scrape: bool = False) -> tuple[pd.DataFrame, dict]:
+    """All per-round rows and season totals from FIRST_SEASON to `year`."""
+    from model import load_seasons
+    from scraper import load_season
+
+    seasons = {}
+    for y in range(FIRST_SEASON, year + 1):
+        refresh = (y == year) and not no_scrape   # only the live season changes
+        seasons[y] = load_season(y, force_scrape=refresh)
+    return load_seasons(seasons)
 
 
-# Default historical year list, derived from today's date. Override per call
-# if you need a frozen window for reproducibility.
-HIST_YEARS = _historical_years(datetime.now().year)
+def ensure_model(rounds: pd.DataFrame, totals: dict, year: int, retrain: bool):
+    """Load the saved model, or evaluate-then-train a fresh one."""
+    from model import (MODEL_PATH, build_training_pairs, evaluate_holdout,
+                       load_model, train_production_model)
+
+    if MODEL_PATH.exists() and not retrain:
+        return load_model()
+
+    pairs = build_training_pairs(rounds, totals)
+    test_year = year if (pairs["year"] == year).sum() >= 500 else year - 1
+    metrics, _, _ = evaluate_holdout(pairs, test_year)
+    return train_production_model(pairs, metrics, test_year)
 
 
-# ── Directory setup ───────────────────────────────────────────────────────────
-
-def create_dirs():
-    from paths import (
-        DATA_RAW, DATA_ROUNDS, DATA_PROCESSED, MODELS_DIR, OUTPUTS_DIR,
-    )
-    for d in (DATA_RAW, DATA_ROUNDS, DATA_PROCESSED, MODELS_DIR, OUTPUTS_DIR):
-        d.mkdir(parents=True, exist_ok=True)
+def next_round_to_predict(rounds: pd.DataFrame, year: int) -> int:
+    played = rounds.loc[rounds["year"] == year, "round"]
+    return int(played.max()) + 1 if not played.empty else 1
 
 
-# ── Round number detection ────────────────────────────────────────────────────
+def build_predictions(year: int, round_num: int | None = None,
+                      no_scrape: bool = False, retrain: bool = False
+                      ) -> tuple[pd.DataFrame, int]:
+    """Scrape/load data, make sure a model exists, and predict a round.
+    Returns (predictions, round_num)."""
+    from model import build_prediction_frame, predict_next_round
+    from scraper import load_fixtures
 
-def detect_round_number(override: int = None) -> int:
-    if override is not None:
-        return override
-    existing = list(Path("outputs").glob("team_round_*.csv"))
-    return len(existing) + 1
+    rounds, totals = load_data(year, no_scrape)
+    if round_num is None:
+        round_num = next_round_to_predict(rounds, year)
+    model = ensure_model(rounds, totals, year, retrain)
 
-
-# ── Pipeline steps ────────────────────────────────────────────────────────────
-
-def run_scraper(year: int, historical: bool) -> pd.DataFrame:
-    from scraper import scrape_full
-    log.info("── Step 1: Scraping nrlsupercoachstats.com (year=%d) ──", year)
-    df_new = scrape_full(year=year, historical=historical, save=True)
-    if df_new.empty:
-        log.error("Scraper returned no data — aborting pipeline")
-        sys.exit(1)
-    log.info("Scraped %d players", len(df_new))
-    return df_new
+    frame = build_prediction_frame(rounds, totals, year, round_num, load_fixtures(year))
+    return predict_next_round(frame, model), round_num
 
 
-def load_existing_data(path: str | None) -> pd.DataFrame:
-    """Load a cached scrape. If path is None, falls back to the most
-    recent nrl_data_*.csv in DATA_RAW so the script keeps working as the
-    season progresses without manually bumping a default date."""
-    from paths import DATA_RAW
-    if path is None:
-        candidates = sorted(DATA_RAW.glob("nrl_data_*.csv"), reverse=True)
-        if not candidates:
-            log.error("No cached data in %s — run without --no-scrape first",
-                      DATA_RAW)
-            sys.exit(1)
-        p = candidates[0]
-    else:
-        p = Path(path)
-        if not p.exists():
-            log.error("Data file not found: %s — run without --no-scrape first", p)
-            sys.exit(1)
-    df = pd.read_csv(p, low_memory=False)
-    log.info("Loaded %d rows from %s", len(df), p)
-    return df
+def export_predictions(df_pred: pd.DataFrame, round_num: int):
+    cols = ["player_name", "team", "positions", "price_usd", "predicted_points",
+            "avg_points", "games_played", "opp", "is_rookie", "bye_round"]
+    path = OUTPUTS_DIR / f"predictions_round_{round_num}.csv"
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    (df_pred[cols].sort_values("predicted_points", ascending=False)
+     .round(1).to_csv(path, index=False))
+    log.info("Predictions exported -> %s", path)
 
-
-def load_or_scrape_historical(df_2026: pd.DataFrame,
-                               years: list = None,
-                               force_rescrape: bool = False) -> pd.DataFrame:
-    """
-    Load cached historical season CSVs (data/raw/nrl_data_{year}.csv).
-    If a year's file is missing or force_rescrape=True, scrape it fresh.
-    Only returns rows for players currently in the 2026 active roster.
-    """
-    from scraper import scrape_historical_seasons
-
-    if years is None:
-        years = HIST_YEARS
-
-    active_players = df_2026["player_name"].dropna().tolist() \
-        if "player_name" in df_2026.columns else []
-
-    years_to_scrape = []
-    frames = []
-
-    from paths import DATA_RAW
-    for yr in years:
-        raw_path = DATA_RAW / f"nrl_data_{yr}.csv"
-        if raw_path.exists() and not force_rescrape:
-            log.info("── Step 1b: Loading cached %d data from %s ──", yr, raw_path)
-            df_yr = pd.read_csv(raw_path, low_memory=False)
-            # Cached files have per-round snapshots; keep only the
-            # season-total row per player. Use total_points as tiebreaker
-            # (cumulative > any single round when games_played ties).
-            if "player_name" in df_yr.columns and "games_played" in df_yr.columns:
-                df_yr["games_played"] = pd.to_numeric(
-                    df_yr["games_played"], errors="coerce"
-                ).fillna(0)
-                if "total_points" in df_yr.columns:
-                    df_yr["total_points"] = pd.to_numeric(
-                        df_yr["total_points"], errors="coerce"
-                    ).fillna(0)
-                before_dedup = len(df_yr)
-                sort_cols = ["games_played"] + (
-                    ["total_points"] if "total_points" in df_yr.columns else []
-                )
-                df_yr = (df_yr.sort_values(sort_cols, ascending=False)
-                              .drop_duplicates(subset=["player_name"], keep="first"))
-                log.info("Year %d: %d → %d after per-round dedup",
-                         yr, before_dedup, len(df_yr))
-            # Re-apply 2026-active filter in case the file pre-dates roster changes
-            if active_players and "player_name" in df_yr.columns:
-                before = len(df_yr)
-                df_yr = df_yr[df_yr["player_name"].isin(set(active_players))].copy()
-                log.info("Year %d: %d → %d (2026-active players)", yr, before, len(df_yr))
-            frames.append(df_yr)
-        else:
-            years_to_scrape.append(yr)
-
-    if years_to_scrape:
-        log.info("── Step 1b: Scraping historical seasons %s ──", years_to_scrape)
-        df_scraped = scrape_historical_seasons(
-            active_players=active_players,
-            years=years_to_scrape,
-            save=True,
-        )
-        if not df_scraped.empty:
-            frames.append(df_scraped)
-
-    if not frames:
-        log.warning("No historical data available for years %s", years)
-        return pd.DataFrame()
-
-    df_hist = pd.concat(frames, ignore_index=True)
-    log.info("Historical data loaded: %d total rows (years %s)", len(df_hist), years)
-    return df_hist
-
-
-def run_feature_engineering(df: pd.DataFrame) -> tuple:
-    from model import clean_data, engineer_features
-    log.info("── Step 3: Cleaning and engineering features ──")
-    df_clean = clean_data(df)
-    df_feat, scaler = engineer_features(df_clean, fit_scaler=True)
-    return df_feat, scaler
-
-
-def run_model(df_feat: pd.DataFrame, retrain: bool,
-              holdout_year: int | None = None):
-    from model import load_or_train_model
-    log.info("── Step 4: Training model on historical data ──")
-    model = load_or_train_model(df_feat, force_retrain=retrain,
-                                holdout_year=holdout_year)
-    if model is None:
-        log.warning("Model training skipped (not enough data with avg_points > 0).")
-    return model
-
-
-def run_predictions(df_feat: pd.DataFrame,
-                    df_historical: pd.DataFrame = None,
-                    fixtures: pd.DataFrame | None = None,
-                    current_round: int | None = None) -> pd.DataFrame:
-    from model import predict_next_round_scores
-    log.info("── Step 5: Predicting next-round scores ──")
-    # Filter df_feat to the current season (2026) players only for the final output
-    if "scrape_year" in df_feat.columns:
-        df_2026_feat = df_feat[df_feat["scrape_year"] == 2026].copy()
-    else:
-        df_2026_feat = df_feat.copy()
-    df_pred = predict_next_round_scores(
-        df_2026_feat, df_historical=df_historical,
-        fixtures=fixtures, current_round=current_round,
-    )
-    return df_pred
-
-
-def load_fixtures(year: int, no_scrape: bool) -> pd.DataFrame:
-    """Load this season's fixtures from disk; scrape if missing.
-
-    Returns an empty DataFrame if neither path produces data — the model
-    degrades gracefully (def_ppm_conceded falls back to last-played
-    opponent / league mean).
-    """
-    from scraper import scrape_fixtures
-    try:
-        return scrape_fixtures(year=year, save=not no_scrape)
-    except (RuntimeError, OSError) as e:
-        log.warning("Fixture load failed: %s — continuing without fixtures.", e)
-        return pd.DataFrame()
-
-
-def run_optimizer(df_pred: pd.DataFrame, round_num: int) -> dict:
-    from optimizer import select_team, print_team, export_team
-    log.info("── Step 6: Running optimizer (Round %d) ──", round_num)
-    result = select_team(df_pred, round_number=round_num)
-    print_team(result)
-    out_path = export_team(result, round_num)
-    log.info("Squad exported → %s", out_path)
-    return result
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="NRL Supercoach Optimizer — weekly pipeline"
-    )
+    parser = argparse.ArgumentParser(description="NRL Supercoach weekly pipeline")
     parser.add_argument("--year", type=int, default=2026)
-    parser.add_argument("--historical", action="store_true",
-                        help="Bootstrap full player page history (slow, first run only)")
+    parser.add_argument("--round", type=int, default=None,
+                        help="Round to predict (default: next unplayed round)")
     parser.add_argument("--no-scrape", action="store_true",
-                        help="Skip 2026 scraping; load from --data")
-    parser.add_argument("--rescrape-history", action="store_true",
-                        help="Force re-scrape of 2024/2025 data even if cached")
+                        help="Use cached data in data/raw/ instead of scraping")
     parser.add_argument("--retrain", action="store_true",
-                        help="Force full model retrain from scratch")
-    parser.add_argument("--holdout-year", type=int, default=None,
-                        help="Year to reserve for validation (default: most "
-                             "recent year in data). Train uses years strictly "
-                             "older than this.")
-    parser.add_argument("--round", type=int, default=None)
+                        help="Re-run the holdout evaluation and retrain the model")
     parser.add_argument("--plan", action="store_true",
-                        help="Run season-long bye round planner after optimizer")
-    parser.add_argument("--plan-from-round", type=int, default=1,
-                        help="Start season plan from this round (default: 1)")
+                        help="Run the season-long bye/trade planner after the optimizer")
     parser.add_argument("--use-squad-state", action="store_true",
-                        help="Seed planner from data/inputs/round_{N}.yaml "
-                             "(actual squad + trades remaining) instead of "
-                             "building a fresh ideal squad.")
-    parser.add_argument("--data", default=None,
-                        help="CSV to use when --no-scrape is set "
-                             "(default: most recent in data/raw/)")
+                        help="Seed the planner from data/inputs/round_<N>.yaml "
+                             "(your real squad + trades left)")
     args = parser.parse_args()
 
-    log.info("=" * 55)
-    log.info("  NRL SUPERCOACH OPTIMIZER  |  Season %d", args.year)
-    log.info("=" * 55)
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(message)s",
+                        datefmt="%H:%M:%S")
+    log.info("NRL SUPERCOACH OPTIMIZER | season %d", args.year)
 
-    create_dirs()
-    round_num = detect_round_number(override=args.round)
-    log.info("Round: %d", round_num)
+    df_pred, round_num = build_predictions(args.year, args.round,
+                                           args.no_scrape, args.retrain)
+    if round_num > TOTAL_ROUNDS:
+        log.info("Round %d is past the end of the %d season - nothing left to "
+                 "pick. Run `python season_review.py` for the season retrospective.",
+                 round_num, args.year)
+        return
+    log.info("Predicting round %d", round_num)
+    export_predictions(df_pred, round_num)
 
-    # ── Step 1: 2026 current season data ─────────────────────────────────────
-    if args.no_scrape:
-        df_2026 = load_existing_data(args.data)
-    else:
-        df_2026 = run_scraper(year=args.year, historical=args.historical)
+    from optimizer import export_team, print_team, select_team
+    result = select_team(df_pred, round_number=round_num)
+    print_team(result)
+    if result.get("solver_status") != "Optimal":
+        log.error("Optimizer status: %s", result.get("solver_status"))
+        sys.exit(1)
+    export_team(result, round_num)
 
-    # ── Step 1b: 2024 + 2025 historical data (filtered to 2026 active players) ─
-    df_hist_raw = load_or_scrape_historical(
-        df_2026,
-        years=HIST_YEARS,
-        force_rescrape=args.rescrape_history,
-    )
+    from visualise import plot_squad
+    plot_squad(result, round_num, OUTPUTS_DIR / f"team_round_{round_num}.png")
 
-    # ── Step 2: Merge all into master historical CSV ──────────────────────────
-    from scraper import update_historical_data
-    if not df_hist_raw.empty:
-        df_all = update_historical_data(
-            pd.concat([df_2026, df_hist_raw], ignore_index=True)
-        )
-    else:
-        df_all = update_historical_data(df_2026)
-    log.info("Master historical CSV: %d total rows", len(df_all))
-
-    # ── Step 3: Feature engineering on ALL data (for model training) ─────────
-    df_feat, _ = run_feature_engineering(df_all)
-
-    # ── Step 4: Train model on 2024+2025 rows (avg_points > 0) ───────────────
-    run_model(df_feat, retrain=args.retrain, holdout_year=args.holdout_year)
-
-    # ── Step 4b: Load fixtures (best-effort) for next-opponent feature ───────
-    # build_prediction_features uses these to overlay vs_team with the
-    # round-N opponent so def_ppm_conceded reflects the upcoming matchup
-    # instead of whatever historical opponent the row carried.
-    fixtures = load_fixtures(args.year, no_scrape=args.no_scrape)
-
-    # ── Step 5: Predict 2026 scores using historical feature lookup ───────────
-    # Pass the raw historical data (before feature engineering) so that
-    # build_prediction_features can join 2025/2024 stats to 2026 players.
-    df_pred = run_predictions(df_feat, df_historical=df_hist_raw,
-                              fixtures=fixtures, current_round=round_num)
-
-    # ── Step 6: Optimise and output ───────────────────────────────────────────
-    result = run_optimizer(df_pred, round_num)
-
-    if result.get("solver_status") == "Optimal":
-        log.info("Pipeline complete. Squad saved for Round %d.", round_num)
-    else:
-        log.warning("Pipeline completed but optimizer status: %s",
-                    result.get("solver_status"))
-
-    # ── Step 7: Season planner (optional) ───────────────────────────────────
-    season_state = None
     if args.plan:
-        from planner import run_season_plan, print_season_summary, export_season_plan
-        log.info("── Step 7: Running season-long bye round planner ──")
-
-        squad_state = None
-        origin_wl = None
+        from planner import export_season_plan, print_season_summary, run_season_plan
+        squad_state, origin_wl = None, None
         if args.use_squad_state:
-            from squad_state import load_state, load_origin_watchlist
-            try:
-                squad_state = load_state(round_num, df_pred)
-                log.info("Squad state loaded: R%d, %d players, %d trades left",
-                         squad_state["current_round"], len(squad_state["squad"]),
-                         squad_state["trades_remaining"])
-            except Exception as e:
-                log.error("Failed to load squad state for R%d: %s", round_num, e)
-                log.error("Falling back to fresh-squad planner.")
+            from squad_state import load_origin_watchlist, load_state
+            squad_state = load_state(round_num, df_pred)
             origin_wl = load_origin_watchlist()
+        state = run_season_plan(df_pred, start_round=round_num,
+                                squad_state=squad_state, origin_watchlist=origin_wl)
+        print_season_summary(state)
+        export_season_plan(state)
 
-        season_state = run_season_plan(
-            df_pred,
-            start_round=args.plan_from_round,
-            squad_state=squad_state,
-            origin_watchlist=origin_wl,
-        )
-        print_season_summary(season_state)
-        export_season_plan(season_state)
-        log.info("Season plan complete.")
-
-    # ── Step 8: Visualisation reports ─────────────────────────────────────────
-    try:
-        from visualise import run_visualisation
-        log.info("── Step 8: Generating visualisation reports ──")
-        run_visualisation(
-            df_feat=df_feat,
-            df_pred=df_pred,
-            round_num=round_num,
-            season_state=season_state,
-        )
-    except Exception as e:
-        log.warning("Visualisation failed (non-fatal): %s", e)
+        from visualise import plot_season_plan
+        plot_season_plan(state, OUTPUTS_DIR / "season_plan.png")
 
 
 if __name__ == "__main__":
