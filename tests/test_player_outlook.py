@@ -3,7 +3,7 @@ whether the player was named, and the State of Origin features."""
 import pandas as pd
 
 from player_outlook import (add_origin, availability_examples, debut_rate, origin_misses,
-                            origin_weeks, team_rounds)
+                            origin_squads, origin_weeks, team_rounds)
 
 
 def _rounds():
@@ -83,3 +83,13 @@ def test_origin_features_only_count_earlier_misses():
     assert list(f["origin_week"]) == [0, 2, 1]
     assert list(f["origin_missed"]) == [0, 0, 1]
     assert f["origin_missed_last_season"].isna().all()      # 2025 not in the data
+
+
+def test_origin_squads_count_only_the_two_previous_series():
+    squads = origin_squads()
+    assert "Cleary, Nathan" in squads[2025] and "Cleary, Nathan" not in squads[2024]
+    q = pd.DataFrame({"player_name": ["Cleary, Nathan", "Nobody, Unknown"],
+                      "year": 2026, "next_round": 5})
+    f = add_origin(q, pd.DataFrame(columns=["player_name", "year", "round"]),
+                   origin_weeks(team_rounds(_origin_rounds())))
+    assert list(f["origin_squads_last2"]) == [1, 0]   # 2025 yes, 2024 no; 2026 never used

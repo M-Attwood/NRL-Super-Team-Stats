@@ -107,3 +107,13 @@ def test_reserve_can_save_a_big_bye_rounds_full_allowance():
     assert spendable_trades(saver, 18, 27, trades_used=28, bye_trades=byes) == 4
     # Off by default: keep 1.25 x 10 = 12.5 -> 13, bye rounds paced like any other.
     assert spendable_trades(IMPROVED, 17, 27, trades_used=26, bye_trades=byes) == 7
+
+
+def test_bye_exempt_lets_a_bye_round_use_its_full_allowance():
+    byes = {12: 4, 15: 4, 18: 4}
+    exempt = replace(IMPROVED, bye_exempt=True)
+    # Round 18: keep 1.25 x 9 = 11.25 -> 12; with 13 left only 1 could go.
+    assert spendable_trades(IMPROVED, 18, 27, trades_used=33, bye_trades=byes) == 1
+    assert spendable_trades(exempt, 18, 27, trades_used=33, bye_trades=byes) == 4
+    assert spendable_trades(exempt, 18, 27, trades_used=44, bye_trades=byes) == 2   # never past 46
+    assert spendable_trades(exempt, 17, 27, trades_used=33, bye_trades=byes) == 0   # normal round

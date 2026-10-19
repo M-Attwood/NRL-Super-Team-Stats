@@ -5,9 +5,13 @@ player_outlook.py — the two forecasts a coach needs besides next week's score.
                  from every round a player's team played after their debut
                  that season: named or not, given recent games, minutes,
                  starting role, how many games in a row they have missed,
-                 and State of Origin (is it an Origin week, and has the
+                 and State of Origin: is it an Origin week, and has the
                  player been missing Origin-week club games this season or
-                 last - the trace Origin selection leaves in club data).
+                 last (the trace Origin selection leaves in club data).
+                 Picks in the last two Origin series (data/inputs/
+                 origin_squads.yaml) are also computed but switched off
+                 (USE_ORIGIN_SQUADS): they sharpened the predictions but
+                 lowered season totals on 2024-25.
   price change  How much will their price move over their next three games?
                  Supercoach prices react to scores against the break-even,
                  so the move is largely predictable from recent form.
@@ -17,11 +21,14 @@ being predicted, like the score model.
 """
 
 import logging
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
+import yaml
 
 from model import player_state
+from paths import DATA_INPUTS
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +40,9 @@ AVAIL_FEATURES = ["named_prev", "missed_streak", "games_played", "season_avg",
                   "last3_avg", "mins_last1", "mins_avg", "last_started", "last_benched",
                   "start_share", "price", "next_round",
                   "origin_week", "origin_missed", "origin_missed_last_season"]
+USE_ORIGIN_SQUADS = False   # tested on 2024-25: better log-loss, -353 points a season
+if USE_ORIGIN_SQUADS:
+    AVAIL_FEATURES.append("origin_squads_last2")
 PRICE_FEATURES = ["price", "last1", "last3_avg", "season_avg", "season_std",
                   "break_even", "games_played", "mins_avg", "season_price_change"]
 
@@ -97,10 +107,22 @@ def origin_misses(rounds: pd.DataFrame, tr: pd.DataFrame, weeks: pd.Series) -> p
             .reset_index(drop=True))
 
 
+@lru_cache(maxsize=1)
+def origin_squads() -> dict[int, frozenset]:
+    """Players in each season's State of Origin squads (both states)."""
+    path = DATA_INPUTS / "origin_squads.yaml"
+    if not path.exists():
+        return {}
+    doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return {int(y): frozenset(n for names in states.values() for n in names)
+            for y, states in doc.items()}
+
+
 def add_origin(q: pd.DataFrame, misses: pd.DataFrame, weeks: pd.Series) -> pd.DataFrame:
     """Origin features for (player_name, year, next_round) queries: the
     week type of next_round, Origin-week games missed earlier this season,
-    and in all of last season (missing when that season isn't in the data)."""
+    and in all of last season (missing when that season isn't in the data),
+    plus how many of the last two Origin series the player was picked for."""
     q = q.copy()
     q["origin_week"] = weeks.reindex(pd.MultiIndex.from_arrays(
         [q["year"], q["next_round"]])).fillna(0).to_numpy()
@@ -112,6 +134,10 @@ def add_origin(q: pd.DataFrame, misses: pd.DataFrame, weeks: pd.Series) -> pd.Da
     q["origin_missed_last_season"] = [
         len(when.get((p, y - 1), [])) if y - 1 in seasons else np.nan
         for p, y in zip(q["player_name"], q["year"])]
+    # Picked in the previous two Origin series: known before the season starts.
+    squads = origin_squads()
+    q["origin_squads_last2"] = [sum(p in squads.get(y - k, ()) for k in (1, 2))
+                                for p, y in zip(q["player_name"], q["year"])]
     return q
 
 

@@ -26,7 +26,7 @@ I ran it live during the 2026 season. This repository is the final version: the 
 | **Honest testing** | Every strategy setting was tuned on the 2024 and 2025 seasons only; 2026 is held out as the test season. The improved strategy wins in all three seasons |
 | **Points predictor** | Trained on 2022–2025, then predicted all **6,407 games of 2026** before each was played. Average error was **16.97 pts per game**, vs 18.08 for the season-average heuristic, and R² rose from 0.15 to 0.24 |
 | **Supporting models** | Availability (will the player be named, State of Origin included?) AUC **0.90**; a 3-game price-change forecast |
-| **Engineering** | Leak-proof features, Wide & Deep network, gradient-boosted trees, CBC integer programs, 57 unit tests, GitHub Actions CI |
+| **Engineering** | Leak-proof features, Wide & Deep network, gradient-boosted trees, CBC integer programs, 59 unit tests, GitHub Actions CI |
 
 ## How it works
 
@@ -110,6 +110,18 @@ With 5 fewer trades, the reserve setting chosen just before (1.5 a round, plus e
 
 The availability model is accurate (AUC 0.90), and under the corrected rules it adds about 200 points a season over the 12 development replays. The seasons disagree, though: switching it off helps 2024 (+468, all 6 replays) and hurts 2025 (−871, all 6). Pricing in Origin makes the strategy prefer Origin players whose clubs have the bye in Origin weeks anyway, since those players lose nothing extra, and that can pile too much of the squad onto one round's bye teams.
 
+**Tested, didn't help.** After the round-18 result I tried three more ideas on 2024–25, 12 replays per season. None beat the current setup, so they are all in the code but switched off:
+
+| Idea | Average season | vs current (replays won) | Bye rounds (3) |
+|---|---:|---:|---:|
+| Current setup | 31,198 | | 2,451 |
+| Bye rounds may always use all 4 trades (`bye_exempt`) | 30,723 | −475 (1 of 12) | 2,832 |
+| Bye rounds not discounted when valuing trades (`plan_byes`) | 30,410 | −788 (1 of 12) | 2,630 |
+| Both together | 29,971 | −1,227 (0 of 12) | 2,911 |
+| NSW/QLD Origin squads from the last two series (`USE_ORIGIN_SQUADS`) | 30,846 | −353 (2 of 12) | 2,447 |
+
+The bye fixes do lift the bye rounds, by up to 460 points, but with 46 trades a season every extra bye-round trade is one fewer for the other 24 rounds. The Origin squads ([`origin_squads.yaml`](data/inputs/origin_squads.yaml), 2020–2026) made the availability predictions sharper: Origin-week log-loss improved from 0.468 to 0.458 in 2024 and from 0.453 to 0.450 in 2025. They still lowered season totals.
+
 The team-value chart shows the strategy buys premiums: 15 of its 46 trades bought a $650K+ player. Trades are spread evenly to the final round.
 
 ![Team value over the season](docs/images/season_team_value.png)
@@ -190,7 +202,7 @@ pip install -r requirements.txt
 python season_review.py     # the final run: benchmarks, 2024-26 season replays, all charts, retrains the model
 python main.py --round 10   # replay any round: predictions + optimal squad (+ --plan for byes)
 python trade_advisor.py --round 9 --no-scrape   # trade advice for the squad in data/inputs/round_9.yaml
-python -m pytest -q         # 57 tests, no TensorFlow needed
+python -m pytest -q         # 59 tests, no TensorFlow needed
 ```
 
 ## Repository layout
@@ -214,7 +226,7 @@ python -m pytest -q         # 57 tests, no TensorFlow needed
 │   ├── season_review/  # simulation logs, predictions, benchmarks, summary.json
 │   └── live_2026/      # what the system produced live during the 2026 season
 ├── docs/images/        # figures in this README
-└── tests/              # 57 pytest tests (leakage, simulator, availability, optimizer, trades)
+└── tests/              # 59 pytest tests (leakage, simulator, availability, optimizer, trades)
 ```
 
 During the season, a scheduled GitHub Actions workflow ran the pipeline every Wednesday and published the squad and trade advice. It has been retired now the season is over, and CI runs the test suite on every push instead.

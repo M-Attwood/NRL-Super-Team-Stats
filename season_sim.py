@@ -73,6 +73,8 @@ class Strategy:
     trade_bar: float = 20.0        # points a trade must add to be worth making
     reserve: float = 1.25          # trades kept in hand per round still to play
     save_for_byes: bool = False    # also keep each later big bye round's full allowance
+    bye_exempt: bool = False       # a big bye round may use its full allowance regardless
+    plan_byes: bool = False        # big bye rounds count in full, not discounted
     cooldown: int = 3              # rounds before a sold player can be bought back
     candidates: int = 40           # trades scored in full per decision
 
@@ -313,6 +315,8 @@ def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy) -> Outlook:
             avail = still_available.astype(float)
         expected[h] = values[h].clip(lower=0) * plays * avail
     weights = strat.discount ** np.arange(len(rounds_ahead))
+    if strat.plan_byes:
+        weights = np.where([h in inputs.bye_trades for h in rounds_ahead], 1.0, weights)
     later = strat.discount ** np.arange(1, last - rnd + 1)
     cash_rate = strat.cash_weight * inputs.points_per_dollar * float(later.sum())
     return Outlook(pd.DataFrame(expected), weights, cash_rate,
@@ -402,12 +406,17 @@ def initial_squad(inputs: SeasonInputs, strat: Strategy) -> tuple[list[str], flo
 def spendable_trades(strat: Strategy, rnd: int, last_round: int, trades_used: int,
                      bye_trades: dict[int, int] | None = None) -> int:
     """Trades that can go this round while still keeping `strat.reserve` in
-    hand for every round after it (with `strat.save_for_byes`, a big bye
-    round's full allowance, `bye_trades`: round -> trades, for each one to come)."""
-    bye_trades = bye_trades if strat.save_for_byes and bye_trades else {}
+    hand for every round after it. `bye_trades` (round -> trades) are the big
+    bye rounds: with `strat.save_for_byes` each later one's full allowance is
+    kept too; with `strat.bye_exempt` a bye round may always use its own."""
+    bye_trades = bye_trades or {}
+    saved = bye_trades if strat.save_for_byes else {}
     later = range(rnd + 1, last_round + 1)
-    keep = sum(max(strat.reserve, bye_trades.get(r, 0)) for r in later) if strat.reserve else 0
-    return max(0, TOTAL_TRADES - trades_used - int(np.ceil(keep)))
+    keep = sum(max(strat.reserve, saved.get(r, 0)) for r in later) if strat.reserve else 0
+    spare = max(0, TOTAL_TRADES - trades_used - int(np.ceil(keep)))
+    if strat.bye_exempt:
+        spare = max(spare, min(bye_trades.get(rnd, 0), TOTAL_TRADES - trades_used))
+    return spare
 
 
 def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
