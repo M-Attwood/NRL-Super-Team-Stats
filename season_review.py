@@ -7,7 +7,8 @@ season_review.py — the end-of-season retrospective (the project's final run).
      cap with each way of valuing players and score its best 18 on real
      results. Not how the game is played; it isolates the predictor.
   3. Full-season simulation: play 2026 under Supercoach rules (pre-season
-     squad, trades, boosts, byes, captain, real prices) — see season_sim.py.
+     squad, trades, boosts, byes, captain, real prices) — see season_sim.py —
+     and rank it against real coaches (data/inputs/human_benchmarks_<year>.yaml).
   4. Players and positions: predicted vs actual per player, position
      analysis, top players, team of the season, bargains.
   5. Retrain the production model on every season, ready for next year.
@@ -24,6 +25,7 @@ import json
 import logging
 
 import pandas as pd
+import yaml
 
 import visualise as viz
 from main import load_data
@@ -31,7 +33,7 @@ from model import (NN_LABEL, ORACLE_LABEL, TARGET, build_training_pairs,
                    evaluate_holdout, fit_price_baseline, primary_position,
                    train_production_model)
 from optimizer import POINTS_ONLY, SALARY_CAP, select_team
-from paths import OUTPUTS_DIR, PROJECT_ROOT
+from paths import DATA_INPUTS, OUTPUTS_DIR, PROJECT_ROOT
 from season_sim import best_lineup, prepare_rounds, simulate_season
 
 log = logging.getLogger(__name__)
@@ -138,6 +140,14 @@ def run_review(year: int, scrape: bool = False) -> dict:
     viz.plot_team_value(model_sim.rounds, IMAGES_DIR / "season_team_value.png", year,
                         SALARY_CAP)
 
+    # How the simulated season ranks against real coaches (from the SuperCoach app).
+    humans = {}
+    bench_path = DATA_INPUTS / f"human_benchmarks_{year}.yaml"
+    if bench_path.exists():
+        humans = yaml.safe_load(bench_path.read_text(encoding="utf-8"))["season_totals"]
+        viz.plot_human_comparison({k: s.total for k, s in sims.items()}, humans, SIM_MODEL,
+                                  IMAGES_DIR / "human_comparison.png", year)
+
     # 4. Players and positions.
     viz.plot_player_predictions(test, IMAGES_DIR / "player_predicted_vs_actual.png",
                                 NN_LABEL, year)
@@ -186,6 +196,7 @@ def run_review(year: int, scrape: bool = False) -> dict:
             "final_team_value": round(float(model_sim.rounds["squad_value"].iloc[-1]
                                             + model_sim.rounds["bank"].iloc[-1])),
         },
+        "vs_real_coaches": {k: round(model_sim.total - v) for k, v in humans.items()},
         "preseason_correlation_with_final_average": preseason_corr,
         "salary_cap": SALARY_CAP,
     }
@@ -206,5 +217,5 @@ if __name__ == "__main__":
                         help="Re-scrape the season before reviewing it")
     args = parser.parse_args()
     summary = run_review(args.year, args.scrape)
-    print(json.dumps({k: summary[k] for k in ("predictor_comparison", "season_simulation")},
-                     indent=2))
+    print(json.dumps({k: summary[k] for k in ("predictor_comparison", "season_simulation",
+                                              "vs_real_coaches")}, indent=2))

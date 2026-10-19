@@ -7,7 +7,7 @@
 
 An end-to-end machine-learning system that plays **NRL Supercoach**, the rugby league fantasy game, from start to finish:
 
-- it picks a winning 26-man squad under the $11.95M salary cap before round 1
+- it picks a 26-man squad under the $11.95M salary cap before round 1
 - each week it predicts every player's score
 - it recommends trades within the game's rules to adapt through the season
 
@@ -22,6 +22,7 @@ I ran it live during the 2026 season. This repository is the final version: the 
 | | |
 |---|---|
 | **Full 2026 season, game rules** | **29,269 points**, an average of 1,084 a round. That is 1,186 more than the same rules driven by season averages, and 4,004 more than never trading |
+| **Against real coaches** | Beats the **average 2026 coach** (28,765) and my own real team (27,956). Still well short of the top 10% of coaches (35,357 on average) and the winner (37,196) |
 | **Team value** | Grew from $11.95M to **$13.56M** through 46 trades and 5 boosts |
 | **Points predictor** | Trained on 2022–2025, then predicted all **6,407 games of 2026** before each was played. Average error was **17.0 pts per game**, vs 18.1 for the season-average heuristic, and R² rose from 0.15 to 0.24 |
 | **Per player** | Each regular's average prediction correlates **0.89** with what they actually averaged |
@@ -75,7 +76,17 @@ The chart at the top shows the result: **29,269 points**. The team-value chart b
 
 Every trade is logged in [`season_simulation_trades.csv`](outputs/season_review/season_simulation_trades.csv), the round-by-round lineups and captains in [`season_simulation_rounds.csv`](outputs/season_review/season_simulation_rounds.csv), and the final squad in [`season_simulation_final_squad.csv`](outputs/season_review/season_simulation_final_squad.csv).
 
-**Where the strategy is weak.** The three big bye rounds (12, 15, 18) are its worst weeks, because it doesn't plan ahead to field 18 players. All 46 trades were gone by round 23. The greedy trade rule also sometimes sells a player and buys them back a round later. Better bye planning ([planner.py](planner.py)) and trade pacing are the clearest next improvements.
+### How it ranks against real 2026 coaches
+
+![Against real coaches](docs/images/human_comparison.png)
+
+The real-coach figures come from the SuperCoach app's end-of-season scoring trends. The simulated team beats the average coach by 504 points and my own real 2026 team by 1,313. It is 6,088 points short of the top-10% average, roughly 226 points a round, and the round-by-round log shows where most of that goes:
+
+- **Bye rounds, about 1,200 points.** In rounds 12, 15 and 18 it scored 2,190 in total, against its normal 1,128 a round. It doesn't plan ahead to field 18 players through the byes, which top coaches do.
+- **Running out of trades, about 600 points.** All 46 trades were used by round 23, and the last four rounds averaged 997 against 1,157 earlier in the season.
+- **Squad building, the remaining ~4,300.** The trade rule only chases predicted points over the next three rounds. It never deliberately buys cheap players to profit from their price rises, which is how top coaches afford a full team of premiums. It also sometimes sells a player and buys them back a round later.
+
+The predictions are not the bottleneck. Section 3 shows they pick better teams than the alternatives. The next gains are in strategy: wiring in the bye planner ([planner.py](planner.py)), pacing trades across the season, and valuing future price rises.
 
 ## 2. Is the points predictor any good?
 
@@ -126,6 +137,7 @@ Below, the bargains: the players whose output was far above what their price imp
 
 - **My first model was cheating, and catching it was the most valuable part of the project.** It predicted a player's season average from stats that included the five scoring components of that same average (base, attack, create, evade, negative). Those components add up to the answer, so it showed R² = 0.98 without forecasting anything. I rebuilt it as a strict "past games → next game" problem. R² dropped to an honest 0.24, but that model holds up on games it has never seen.
 - **On noisy tabular data a linear model is a serious baseline.** A plain neural network lost to ridge regression, and a Wide & Deep design matched it. Reporting the tie is more useful than tuning on the test set until the network wins.
+- **Good predictions are necessary but not sufficient.** The predictor beats every heuristic and the simulated team beats the average coach, but the best humans win on long-term planning: byes, trade pacing and cash generation. A three-round greedy trader can't see far enough ahead for that.
 - **The market is efficient pre-season; the edge comes in-season.** Before round 1, the model's valuations and Supercoach's own prices rank players about equally well (r = 0.64 vs 0.63 against final averages). Once real form data arrives, the model pulls ahead.
 - **Evaluation design matters as much as the model.** A single pre-season squad is one noisy sample, so I tested the predictor with 27 independent picks and then the full season under real rules. The optimizer's team-diversity bonus suits season-long squads but is the wrong objective for a one-off pick. Getting these right changed the conclusions more than any hyperparameter did.
 

@@ -667,3 +667,42 @@ def plot_top_players(test: pd.DataFrame, totals: pd.DataFrame, path: Path,
             "Top scorers at each position, what the model expected of them, and how their "
             "price moved (start → end of season).", y=0.985)
     _save(fig, path)
+
+
+def plot_human_comparison(simulated: dict, humans: dict, highlight: str, path: Path,
+                          season: int):
+    """Season totals of the simulated strategies alongside real coaches."""
+    apply_style()
+    rows = [(name, total, "human") for name, total in humans.items()]
+    rows += [(name, total, "sim") for name, total in simulated.items()]
+    rows.sort(key=lambda r: r[1])
+    colour = {"human": DE_EMPHASIS, "sim": LIGHT_BLUE}
+
+    fig, ax = plt.subplots(figsize=(11, 5.6))
+    fig.subplots_adjust(left=0.3, right=0.95, top=0.8, bottom=0.11)
+    y = np.arange(len(rows))
+    ax.barh(y, [r[1] for r in rows], height=0.6,
+            color=[BLUE if r[0] == highlight else colour[r[2]] for r in rows])
+    for yy, (name, total, _) in zip(y, rows):
+        strong = name == highlight
+        ax.text(total + 300, yy, f"{total:,.0f}", va="center", fontsize=9.5,
+                color=INK if strong else INK_2, fontweight="semibold" if strong else "normal")
+    ax.set_yticks(y, [("System: " + r[0]) if r[2] == "sim" else r[0] for r in rows],
+                  fontsize=9.5)
+    ax.set_xlim(0, max(r[1] for r in rows) * 1.1)
+    ax.set_xlabel(f"{season} season total (points)")
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v / 1000:.0f}k"))
+    ax.grid(axis="y", visible=False)
+    handles = [Rectangle((0, 0), 1, 1, color=c) for c in (DE_EMPHASIS, BLUE)]
+    ax.legend(handles, [f"Real {season} coaches", "Simulated by this system"],
+              loc="lower right")
+
+    total = simulated[highlight]
+    avg = humans.get("Average coach")
+    top10 = humans.get("Top 10% of coaches (avg)")
+    _titles(fig, f"Where the system would have finished in {season}",
+            f"{total:,.0f} points: {total - avg:+,.0f} on the average coach, but "
+            f"{top10 - total:,.0f} short of the top-10% average.")
+    _footnote(fig, "Real-coach figures from the SuperCoach app's season scoring trends. "
+                   "Simulated teams follow the same squad, trade and captain rules.")
+    _save(fig, path)

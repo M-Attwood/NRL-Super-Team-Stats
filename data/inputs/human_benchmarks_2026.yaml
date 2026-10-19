@@ -1,0 +1,15 @@
+# Real 2026 NRL SuperCoach Classic results, for ranking the season simulation.
+# Source: the SuperCoach app's "Scoring Trends" panel after round 27, plus the
+# overall winner's total. Season totals across all coaches.
+season: 2026
+season_totals:
+  Overall winner: 37196
+  Top 5% of coaches (avg): 35672
+  Top 10% of coaches (avg): 35357
+  Average coach: 28765
+  My real 2026 team: 27956
+per_round:
+  Top 5% of coaches (avg): 1321
+  Top 10% of coaches (avg): 1310
+  Average coach: 1065
+  My real 2026 team: 1035

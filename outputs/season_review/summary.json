@@ -73,6 +73,13 @@
     "boosts_used": 5,
     "final_team_value": 13556000
   },
+  "vs_real_coaches": {
+    "Overall winner": -7927,
+    "Top 5% of coaches (avg)": -6403,
+    "Top 10% of coaches (avg)": -6088,
+    "Average coach": 504,
+    "My real 2026 team": 1313
+  },
   "preseason_correlation_with_final_average": {
     "Wide & Deep NN": 0.642,
     "Start price": 0.634,
