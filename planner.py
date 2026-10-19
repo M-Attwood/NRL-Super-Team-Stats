@@ -422,17 +422,21 @@ def validate_position_quotas(squad: list[dict]) -> bool:
 
 # ── Effective trade limit with reservations ──────────────────────────────────
 
-def get_effective_trade_limit(rnd: int, trades_used: int) -> int:
+def get_effective_trade_limit(rnd: int, trades_used: int,
+                              reservations: dict[int, int] | None = None) -> int:
     """
     Max trades to use this round, considering reservations for future
     big bye rounds so the greedy algorithm doesn't exhaust the budget early.
+    `reservations` (big bye round -> trades) defaults to the 2026 draw.
     """
-    base = base_trades_for_round(rnd)
+    if reservations is None:
+        reservations = TRADE_RESERVATIONS
+    base = BASE_TRADES_BIG_BYE if rnd in reservations else BASE_TRADES_NORMAL
     remaining = TOTAL_TRADES - trades_used
 
     # How many trades are reserved for future critical rounds?
     future_reserved = sum(
-        budget for future_rnd, budget in TRADE_RESERVATIONS.items()
+        budget for future_rnd, budget in reservations.items()
         if future_rnd > rnd
     )
 

@@ -47,9 +47,10 @@
     }
   },
   "availability_and_price_models": {
-    "availability_auc": 0.8922,
-    "availability_log_loss": 0.3882,
+    "availability_auc": 0.8973,
+    "availability_log_loss": 0.3818,
     "naive_log_loss": 0.5242,
+    "origin_weeks_log_loss": 0.4585,
     "price_change_r2": 0.153,
     "price_change_mae": 51378.9069
   },
@@ -68,48 +69,48 @@
   },
   "season_simulation": {
     "season_points": {
-      "Model + improved strategy": 32769,
+      "Model + improved strategy": 33268,
       "Model + original strategy": 29535,
-      "Season averages + improved strategy": 31761,
+      "Season averages + improved strategy": 32679,
       "Model squad, no trades": 25556
     },
     "average_per_round": {
-      "Model + improved strategy": 1213.7,
+      "Model + improved strategy": 1232.1,
       "Model + original strategy": 1093.9,
-      "Season averages + improved strategy": 1176.3,
+      "Season averages + improved strategy": 1210.3,
       "Model squad, no trades": 946.5
     },
     "empty_scoring_slots": {
-      "Model + improved strategy": 24,
+      "Model + improved strategy": 11,
       "Model + original strategy": 36,
-      "Season averages + improved strategy": 30,
+      "Season averages + improved strategy": 22,
       "Model squad, no trades": 118
     },
-    "bye_rounds_12_15_18": 2765,
+    "bye_rounds_12_15_18": 3187,
     "trades_used": 46,
     "boosts_used": 5,
-    "final_team_value": 14255400
+    "final_team_value": 13846900
   },
   "strategy_by_season": {
     "2024": {
-      "Model + original strategy": 28393,
-      "Model + improved strategy": 30590
+      "Model + original strategy": 28704,
+      "Model + improved strategy": 29499
     },
     "2025": {
       "Model + original strategy": 30748,
-      "Model + improved strategy": 32033
+      "Model + improved strategy": 33232
     },
     "2026": {
       "Model + original strategy": 29535,
-      "Model + improved strategy": 32769
+      "Model + improved strategy": 33268
     }
   },
   "vs_real_coaches": {
-    "Overall winner": -4427,
-    "Top 5% of coaches (avg)": -2903,
-    "Top 10% of coaches (avg)": -2588,
-    "Average coach": 4004,
-    "My real 2026 team": 4813
+    "Overall winner": -3928,
+    "Top 5% of coaches (avg)": -2404,
+    "Top 10% of coaches (avg)": -2089,
+    "Average coach": 4503,
+    "My real 2026 team": 5312
   },
   "preseason_correlation_with_final_average": {
     "NN + ridge ensemble": 0.634,

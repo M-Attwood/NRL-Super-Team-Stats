@@ -6,9 +6,10 @@ then trade every week. The replay only uses what was known at the time.
 
   Pre-season   26 players at start-of-season prices under the $11.95M cap.
   Each round   - Prices move exactly as they did that season.
-               - Trades: 2 per round (3 in the big bye rounds), 46 for the
-                 season, plus 5 one-off boosts (max one a round). A trade must
-                 fit the bank (cash left + sale price) and the position quotas.
+               - Trades: 2 per round (3 in the big bye rounds, read from that
+                 season's draw), 46 for the season, plus 5 one-off boosts (max
+                 one a round). A trade must fit the bank (cash left + sale
+                 price) and the position quotas.
                - The scoring 18 (13 starters, 4 bench, 1 flex) is chosen from
                  squad players named that round by predicted points; the
                  highest prediction is captain (double points).
@@ -22,10 +23,12 @@ How trades are chosen is set by a Strategy:
   IMPROVED   values the whole squad's best 18 (plus captain) in every
              remaining round, discounted, so depth for bye rounds counts;
              per-round predictions against each upcoming opponent; the
-             availability model for who will be named; cash value of the
-             bank and of expected price rises; keeps 1.5 trades in hand per
-             round still to play, so it never runs dry before the last
-             round; no buying back a player just sold.
+             availability model for who will be named, State of Origin
+             weeks included; cash value of the bank and of expected price
+             rises; keeps 1.5 trades in hand per round still to play (3 for
+             a big bye round), so it never runs dry before the last round
+             and can use a bye round's full allowance; no buying back a
+             player just sold.
 
 Strategy parameters are tuned on a development season only (see
 season_review.py), never on the season being reported.
@@ -41,16 +44,18 @@ import pulp
 from model import (build_prediction_frame, opponent_factor, player_state,
                    predict_next_round)
 from optimizer import ACTIVE_QUOTAS, SALARY_CAP, _eligible_positions, select_team
-from planner import (TOTAL_TRADES, TRADE_BOOSTS, get_effective_trade_limit,
-                     validate_position_quotas)
-from player_outlook import (AVAIL_FEATURES, attach_history, predict_availability,
-                            predict_price_change, team_rounds)
+from planner import (BASE_TRADES_BIG_BYE, TOTAL_TRADES, TRADE_BOOSTS,
+                     get_effective_trade_limit, validate_position_quotas)
+from player_outlook import (add_origin, attach_history, origin_misses, origin_weeks,
+                            predict_availability, predict_price_change, team_rounds)
 from scraper import load_fixtures
 
 log = logging.getLogger(__name__)
 
 LOOKAHEAD = 6            # rounds predicted individually against each opponent
 LINEUP_SLOTS = [(pos, n) for pos, n in ACTIVE_QUOTAS.items()] + [("FLEX", 1)]
+# Availability column for each kind of week (player_outlook.origin_weeks).
+AVAIL_BY_WEEK = {0: "p_next", 1: "p_after_origin", 2: "p_origin"}
 
 
 @dataclass(frozen=True)
@@ -63,7 +68,8 @@ class Strategy:
     availability: bool = True      # use the availability model for future rounds
     cash_weight: float = 0.5       # share of cash assumed turned into points later
     trade_bar: float = 20.0        # points a trade must add to be worth making
-    reserve: float = 1.5           # trades (incl. boosts) kept in hand per round still to play
+    reserve: float = 1.5           # trades (incl. boosts) kept in hand per round still to
+                                   # play; a big bye round keeps its full allowance
     cooldown: int = 3              # rounds before a sold player can be bought back
     candidates: int = 40           # trades scored in full per decision
 
@@ -88,6 +94,12 @@ class SeasonInputs:
     year: int
     rounds: dict[int, RoundData]
     points_per_dollar: float     # what $1 buys in points per game (price slope)
+    origin_week: dict[int, int] = field(default_factory=dict)   # round -> 0/1/2
+
+    @property
+    def bye_trades(self) -> dict[int, int]:
+        """This season's big bye (Origin) rounds and their trade allowance."""
+        return {r: BASE_TRADES_BIG_BYE for r, w in self.origin_week.items() if w == 2}
 
 
 def fixtures_for(rounds: pd.DataFrame, year: int) -> pd.DataFrame:
@@ -119,9 +131,12 @@ def _opponents(fixtures: pd.DataFrame, rnd: int) -> dict[str, str]:
 
 
 def _availability(frame: pd.DataFrame, rounds: pd.DataFrame, year: int, rnd: int,
-                  clf, team_games: pd.DataFrame, debut_rate: float) -> pd.Series:
+                  clf, team_games: pd.DataFrame, debut_rate: float,
+                  weeks: pd.Series, misses: pd.DataFrame) -> pd.DataFrame:
     """P(named for the team's next game after this round), from what is
-    known before this round: recent games plus this round's team list."""
+    known before this round: recent games plus this round's team list.
+    One column per kind of week (AVAIL_BY_WEEK): an ordinary round, a
+    State of Origin week and the round after one."""
     history = rounds[(rounds["year"] == year) & (rounds["round"] < rnd)]
     q = pd.DataFrame({"player_name": frame.index, "year": year, "next_round": rnd,
                       "home_team": frame["team"].values})
@@ -135,10 +150,14 @@ def _availability(frame: pd.DataFrame, rounds: pd.DataFrame, year: int, rnd: int
         later = grp.loc[grp["round"] > rnd, "round"]
         next_rounds[team] = later.min() if not later.empty else rnd + 1
     q["next_round"] = frame["team"].map(next_rounds).fillna(rnd + 1).to_numpy()
-    p = predict_availability(clf, q[AVAIL_FEATURES])
+    # Origin-week games missed up to and including this round's team lists.
+    q = add_origin(q, misses, weeks)
     no_history = q["games_played"].isna().to_numpy()
-    p = np.where(no_history, np.where(named, 0.9, debut_rate), p)
-    return pd.Series(p, index=frame.index)
+    out = {}
+    for week, col in AVAIL_BY_WEEK.items():
+        p = predict_availability(clf, q.assign(origin_week=week))
+        out[col] = np.where(no_history, np.where(named, 0.9, debut_rate), p)
+    return pd.DataFrame(out, index=frame.index)
 
 
 def prepare_season(rounds: pd.DataFrame, totals: dict, year: int, predictor,
@@ -152,6 +171,8 @@ def prepare_season(rounds: pd.DataFrame, totals: dict, year: int, predictor,
     last_round = int(season["round"].max())
     prices = price_table(rounds, totals, year, last_round)
     team_games = team_rounds(rounds[rounds["year"] <= year])
+    weeks = origin_weeks(team_games)          # from the draw, known pre-season
+    misses = origin_misses(rounds[rounds["year"] <= year], team_games, weeks)
     playing = {r: set(fixtures.loc[fixtures["round"] == r, "home_team"])
                | set(fixtures.loc[fixtures["round"] == r, "away_team"])
                for r in range(1, last_round + 1)}
@@ -180,18 +201,20 @@ def prepare_season(rounds: pd.DataFrame, totals: dict, year: int, predictor,
         frame["team_plays"] = frame["team"].isin(playing[rnd])
         frame["season_avg_value"] = np.where(frame["is_rookie"], frame["predicted_points"],
                                              frame["season_avg"])
-        frame["p_next"] = _availability(frame, rounds, year, rnd, avail_clf,
-                                        team_games, debut_rate)
+        avail = _availability(frame, rounds, year, rnd, avail_clf, team_games,
+                              debut_rate, weeks, misses)
+        frame[avail.columns] = avail
         # Within-season price model; prices don't move before round 2.
         frame["price_change_3"] = predict_price_change(price_model, frame) if rnd > 1 else 0.0
         keep = ["team", "positions", "price", "price_usd", "named", "score", "team_plays",
-                "predicted_points", "season_avg_value", "is_rookie", "p_next",
-                "price_change_3"]
+                "predicted_points", "season_avg_value", "is_rookie",
+                *AVAIL_BY_WEEK.values(), "price_change_3"]
         out[rnd] = RoundData(frame[keep], pd.DataFrame(preds, index=frame.index),
                              playing[rnd])
         log.info("Prepared %d round %d: %d players, %d named", year, rnd, len(frame),
                  int(frame["named"].sum()))
-    return SeasonInputs(year, out, points_per_dollar=price_fit[0])
+    return SeasonInputs(year, out, points_per_dollar=price_fit[0],
+                        origin_week={r: int(weeks.get((year, r), 0)) for r in out})
 
 
 # ── Lineups ───────────────────────────────────────────────────────────────────
@@ -262,7 +285,7 @@ def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy) -> Outlook:
         if h == rnd:
             avail = f["named"].astype(float)
         elif strat.availability:
-            avail = f["p_next"]
+            avail = f[AVAIL_BY_WEEK[inputs.origin_week.get(h, 0)]]
         else:
             avail = still_available.astype(float)
         expected[h] = values[h].clip(lower=0) * plays * avail
@@ -353,11 +376,14 @@ def initial_squad(inputs: SeasonInputs, strat: Strategy) -> tuple[list[str], flo
 
 
 def spendable_trades(strat: Strategy, rnd: int, last_round: int, trades_used: int,
-                     boosts_left: int) -> int:
+                     boosts_left: int, bye_trades: dict[int, int] | None = None) -> int:
     """Trades (and boosts) that can go this round while still keeping
-    `strat.reserve` in hand for every round after it."""
-    keep = int(np.ceil(strat.reserve * (last_round - rnd)))
-    return max(0, TOTAL_TRADES - trades_used + boosts_left - keep)
+    `strat.reserve` in hand for every round after it, and a big bye round's
+    full allowance (`bye_trades`: round -> trades) for each one still to come."""
+    bye_trades = bye_trades or {}
+    later = range(rnd + 1, last_round + 1)
+    keep = sum(max(strat.reserve, bye_trades.get(r, 0)) for r in later) if strat.reserve else 0
+    return max(0, TOTAL_TRADES - trades_used + boosts_left - int(np.ceil(keep)))
 
 
 def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
@@ -377,9 +403,10 @@ def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
         made = 0
         if trading and rnd > 1:
             view = outlook_for(inputs, rnd, strat)
-            limit = get_effective_trade_limit(rnd, trades_used)
+            limit = get_effective_trade_limit(rnd, trades_used, inputs.bye_trades)
             bar = strat.trade_bar
-            spendable = spendable_trades(strat, rnd, max(data), trades_used, boosts_left)
+            spendable = spendable_trades(strat, rnd, max(data), trades_used, boosts_left,
+                                         inputs.bye_trades)
             banned_in = {p for p, r in sold_in.items() if rnd - r < strat.cooldown}
             locked_out = {p for p, r in bought_in.items()
                           if rnd - r < strat.cooldown and f.at[p, "named"]}

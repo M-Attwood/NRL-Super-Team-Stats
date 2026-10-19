@@ -1,8 +1,9 @@
-"""Tests for the availability examples: what was known before each round
-and whether the player was named."""
+"""Tests for the availability examples: what was known before each round,
+whether the player was named, and the State of Origin features."""
 import pandas as pd
 
-from player_outlook import availability_examples, debut_rate
+from player_outlook import (add_origin, availability_examples, debut_rate, origin_misses,
+                            origin_weeks, team_rounds)
 
 
 def _rounds():
@@ -46,3 +47,39 @@ def test_debut_rate_counts_players_still_waiting_for_a_game():
     totals = {2026: pd.DataFrame({"player_name": ["Team, Mate", "A, Player", "Never, Played"]})}
     # Everyone who plays debuts in round 1, so nobody debuts in rounds 2-5.
     assert debut_rate(rounds, totals) == 0.0
+
+
+def _origin_rounds():
+    # Six teams. Round 3 is an Origin week (five teams on bye), round 4 the week after.
+    # A (T0) plays 1, 2, 4: sat out the Origin week after playing round 2.
+    # B (T0) plays 1, 3, 4: missed round 2, an ordinary week.
+    # C (T1) plays 1, 2: T1 is on bye in round 3, so C sat out round 4.
+    rows = [(f"Mate, T{t}", 2026, r, f"T{t}") for t in range(6)
+            for r in (1, 2, 3, 4) if r != 3 or t == 0]
+    rows += [("A", 2026, r, "T0") for r in (1, 2, 4)]
+    rows += [("B", 2026, r, "T0") for r in (1, 3, 4)]
+    rows += [("C", 2026, r, "T1") for r in (1, 2)]
+    return pd.DataFrame(rows, columns=["player_name", "year", "round", "team"])
+
+
+def test_origin_weeks_come_from_the_draw():
+    weeks = origin_weeks(team_rounds(_origin_rounds()))
+    assert weeks.loc[2026].to_dict() == {1: 0, 2: 0, 3: 2, 4: 1}
+
+
+def test_origin_misses_need_the_previous_team_game_played():
+    rounds = _origin_rounds()
+    tr = team_rounds(rounds)
+    misses = origin_misses(rounds, tr, origin_weeks(tr))
+    assert set(zip(misses["player_name"], misses["round"])) == {("A", 3), ("C", 4)}
+
+
+def test_origin_features_only_count_earlier_misses():
+    rounds = _origin_rounds()
+    tr = team_rounds(rounds)
+    weeks = origin_weeks(tr)
+    q = pd.DataFrame({"player_name": ["A", "A", "A"], "year": 2026, "next_round": [2, 3, 4]})
+    f = add_origin(q, origin_misses(rounds, tr, weeks), weeks)
+    assert list(f["origin_week"]) == [0, 2, 1]
+    assert list(f["origin_missed"]) == [0, 0, 1]
+    assert f["origin_missed_last_season"].isna().all()      # 2025 not in the data

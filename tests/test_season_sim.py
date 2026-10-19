@@ -54,6 +54,17 @@ def test_outlook_uses_team_lists_now_and_availability_later():
     assert e.loc["par", 3] == 0                       # PAR on bye in round 3
 
 
+def test_origin_weeks_use_origin_availability():
+    inputs = _inputs()
+    frame = inputs.rounds[1].frame.assign(p_origin=0.3, p_after_origin=0.6)
+    inputs.rounds = {r: RoundData(frame, rd.preds, rd.teams_playing)
+                     for r, rd in inputs.rounds.items()}
+    inputs.origin_week = {2: 2, 3: 1}
+    e = outlook_for(inputs, 1, IMPROVED).expected
+    assert e.loc["bro", 2] == pytest.approx(15)       # Origin week: 50 x 0.3
+    assert e.loc["mel", 3] == pytest.approx(30)       # the week after: 50 x 0.6
+
+
 def test_original_strategy_assumes_unnamed_players_stay_out():
     e = outlook_for(_inputs(), 1, ORIGINAL).expected
     assert e.loc["bro", 2] == 50                      # bye now, counted back
@@ -67,3 +78,15 @@ def test_improved_strategy_keeps_trades_for_the_run_home():
     assert spendable_trades(IMPROVED, 27, 27, trades_used=44, boosts_left=0) == 2
     # The original strategy spends whatever is left.
     assert spendable_trades(ORIGINAL, 20, 27, trades_used=36, boosts_left=0) == 10
+
+
+def test_reserve_saves_a_big_bye_rounds_full_allowance():
+    byes = {12: 3, 15: 3, 18: 3}
+    # Round 17: keep 3 for round 18 plus 1.5 x 9 later rounds = 16.5 -> 17.
+    assert spendable_trades(IMPROVED, 17, 27, trades_used=27, boosts_left=0,
+                            bye_trades=byes) == 2
+    # Round 18 itself keeps only 1.5 x 9 = 13.5 -> 14, so all 3 trades can go.
+    assert spendable_trades(IMPROVED, 18, 27, trades_used=29, boosts_left=0,
+                            bye_trades=byes) == 3
+    assert spendable_trades(ORIGINAL, 17, 27, trades_used=27, boosts_left=0,
+                            bye_trades=byes) == 19
