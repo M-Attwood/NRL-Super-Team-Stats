@@ -40,7 +40,7 @@
       "rank_corr": 0.5948
     }
   },
-  "weekly_squad_backtest": {
+  "predictor_comparison": {
     "season_points": {
       "Wide & Deep NN": 32086,
       "Season average": 30401,
@@ -51,27 +51,32 @@
       "Season average": 21,
       "Price only": 18,
       "Hindsight-perfect": 0
-    },
-    "rounds": 27
-  },
-  "preseason_squad_backtest": {
-    "season_points": {
-      "Wide & Deep NN": 21327,
-      "Last season's average": 19917,
-      "Price only": 23515,
-      "Hindsight-perfect": 34693
-    },
-    "squad_cost": {
-      "Wide & Deep NN": 11947400,
-      "Last season's average": 11938700,
-      "Price only": 11947900,
-      "Hindsight-perfect": 11939600
-    },
-    "correlation_with_final_average": {
-      "Wide & Deep NN": 0.642,
-      "Start price": 0.634,
-      "Last season's average": 0.506
     }
+  },
+  "season_simulation": {
+    "season_points": {
+      "Model + trades": 29269,
+      "Season-average heuristic + trades": 28083,
+      "Model squad, no trades": 25265
+    },
+    "average_per_round": {
+      "Model + trades": 1084.0,
+      "Season-average heuristic + trades": 1040.1,
+      "Model squad, no trades": 935.7
+    },
+    "best_round": {
+      "Model + trades": 10,
+      "Season-average heuristic + trades": 22,
+      "Model squad, no trades": 10
+    },
+    "trades_used": 46,
+    "boosts_used": 5,
+    "final_team_value": 13556000
+  },
+  "preseason_correlation_with_final_average": {
+    "Wide & Deep NN": 0.642,
+    "Start price": 0.634,
+    "Last season's average": 0.573
   },
   "salary_cap": 11950000
 }

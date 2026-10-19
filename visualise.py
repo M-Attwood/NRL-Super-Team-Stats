@@ -3,7 +3,9 @@ visualise.py — every chart the project draws, in one consistent style.
 
 Weekly pipeline:   plot_squad, plot_season_plan
 Season review:     plot_model_benchmark, plot_error_by_round, plot_calibration,
-                   plot_strategy_backtest, plot_team_of_season, plot_value_picks
+                   plot_strategy_backtest, plot_season_simulation, plot_team_value,
+                   plot_player_predictions, plot_position_analysis, plot_top_players,
+                   plot_team_of_season, plot_value_picks
 
 Style: light chart surface, hairline grids, thin marks, a fixed categorical
 order (validated for colour-vision deficiency), text in ink colours only.
@@ -58,8 +60,8 @@ def apply_style():
 
 def _titles(fig, title: str, subtitle: str | None = None, y: float = 0.985):
     """Left-aligned headline + one-line subtitle, the chart's takeaway."""
-    fig.text(0.02, y, title, fontsize=15, fontweight="semibold", color=INK,
-             ha="left", va="top")
+    fig.text(0.02, y, title.replace("$", r"\$"), fontsize=15, fontweight="semibold",
+             color=INK, ha="left", va="top")
     if subtitle:
         gap = 0.36 / fig.get_figheight()          # fixed 0.36in below the title
         fig.text(0.02, y - gap, subtitle.replace("$", r"\$"), fontsize=10.5,
@@ -304,12 +306,12 @@ def plot_strategy_backtest(weekly: pd.DataFrame, path: Path, season: int,
     nn = weekly[highlight]
     won = {n: int((nn > weekly[n]).sum()) for n in weekly.columns if n not in (highlight, reference)}
     beats = ", ".join(f"{n.lower()} in {w} of {len(weekly)} rounds" for n, w in won.items())
-    _titles(fig, f"Picking a fresh squad every round of {season}",
-            f"Same optimizer and $11.95M cap, three ways of valuing players. "
-            f"The model's squad beat {beats}.")
-    _footnote(fig, f"Pool each round = players who took the field, at that round's prices; the "
-                   f"model only sees earlier games. Hindsight-perfect picks score {best:,.0f} "
-                   "for reference. Captaincy ignored.")
+    _titles(fig, "Which predictor picks better teams?",
+            f"A controlled test: every round of {season}, each method picks a brand-new squad "
+            f"under the $11.95M cap. The model's squad beat {beats}.")
+    _footnote(fig, "Not a real-game simulation (that allows 2 trades a round; see the season "
+                   "simulation). Pool = players named that round, at that round's prices; the "
+                   f"model only sees earlier games. Hindsight-perfect: {best:,.0f}.")
     _save(fig, path)
 
 
@@ -414,4 +416,254 @@ def plot_value_picks(players: pd.DataFrame, path: Path, season: int, n_label: in
     _titles(fig, f"The {season} bargains",
             f"Players with 10+ games. Blue = the {n_label} best points-per-dollar buys at "
             "start-of-season prices, the cheap risers that fund a winning squad.")
+    _save(fig, path)
+
+
+# ── Season review: full-season simulation ─────────────────────────────────────
+
+LIGHT_BLUE = "#86b6ef"
+POSITIONS = ["HOK", "FRF", "2RF", "HFB", "5/8", "CTW", "FLB"]
+POSITION_NAMES = {"HOK": "Hooker", "FRF": "Front row", "2RF": "Second row",
+                  "HFB": "Halfback", "5/8": "Five-eighth", "CTW": "Centre / wing",
+                  "FLB": "Fullback"}
+
+
+def _primary(positions: pd.Series) -> pd.Series:
+    return positions.fillna("").astype(str).str.split("|").str[0]
+
+
+def plot_season_simulation(results: dict, highlight: str, path: Path, season: int,
+                           big_byes=(12, 15, 18)):
+    """Round scores of the simulated team (left) and running totals (right)."""
+    apply_style()
+    main = results[highlight]
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(13.5, 5.4),
+                                  gridspec_kw={"width_ratios": [1.6, 1]})
+    fig.subplots_adjust(left=0.06, right=0.8, top=0.78, bottom=0.13, wspace=0.22)
+
+    r = main.index
+    top = main["points"].max() * 1.12
+    for b in big_byes:
+        ax.axvspan(b - 0.5, b + 0.5, color=GRID, alpha=0.7, lw=0, zorder=0)
+        ax.text(b, top * 0.97, "bye", ha="center", va="top", fontsize=8, color=INK_2)
+    ax.bar(r, main["lineup_points"], width=0.7, color=BLUE, label="Best 18 on the field")
+    ax.bar(r, main["captain_points"], bottom=main["lineup_points"], width=0.7,
+           color=LIGHT_BLUE, label="Captain's bonus")
+    avg = main["points"].mean()
+    ax.axhline(avg, color=INK_2, lw=1, ls=(0, (4, 3)))
+    ax.text(r[-1] + 0.7, avg, f"avg\n{avg:,.0f}", fontsize=8.5, color=INK_2, va="center")
+    ax.set_xticks(range(1, r[-1] + 1, 2))
+    ax.set_xlim(0.4, r[-1] + 0.6)
+    ax.set_xlabel("Round")
+    ax.set_ylabel("Points")
+    ax.set_ylim(0, top)
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
+    ax.legend(loc="upper left", ncols=2, bbox_to_anchor=(0, 1.12))
+
+    colours = dict(zip(results, [BLUE, ORANGE, AQUA, YELLOW]))
+    ends = sorted(((v["points"].sum(), k) for k, v in results.items()), reverse=True)
+    for name, res in results.items():
+        cum = res["points"].cumsum()
+        ax2.plot(cum.index, cum.values, color=colours[name],
+                 lw=2.6 if name == highlight else 2)
+    gap = ends[0][0] * 0.09                # two-line labels need ~9% of the axis
+    label_y = None
+    for total, name in ends:
+        label_y = total if label_y is None else min(total, label_y - gap)
+        ax2.annotate(f"{total:,.0f}\n{name}", (r[-1], total), xytext=(r[-1] + 1.2, label_y),
+                     fontsize=8.5, va="center", annotation_clip=False,
+                     color=INK if name == highlight else INK_2,
+                     fontweight="semibold" if name == highlight else "normal",
+                     arrowprops=dict(arrowstyle="-", color=BASELINE, lw=0.7))
+    ax2.set_xlim(1, r[-1])
+    ax2.set_xlabel("Round")
+    ax2.set_ylabel("Season points so far")
+    ax2.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v / 1000:.0f}k"))
+
+    total = main["points"].sum()
+    others = [t for t, n in ends if n != highlight]
+    _titles(fig, f"The full {season} season under Supercoach rules: {total:,.0f} points",
+            f"Pre-season squad, then the model's trades every round (46 + 5 boosts), with real "
+            f"prices, team lists and byes; captain doubled. {total - max(others):+,.0f} vs. the "
+            "same rules driven by season averages.")
+    _footnote(fig, "Every decision uses only what was known before that round; points are the "
+                   f"real {season} scores. Scoring 18 = 13 starters + 4 bench + 1 flex.")
+    _save(fig, path)
+
+
+def plot_team_value(rounds: pd.DataFrame, path: Path, season: int, cap: float):
+    """Squad value + cash in the bank, and trades used, round by round."""
+    apply_style()
+    value = (rounds["squad_value"] + rounds["bank"]) / 1e6
+    fig, (ax, ax2) = plt.subplots(2, 1, figsize=(11, 5.8), sharex=True,
+                                  gridspec_kw={"height_ratios": [3, 1]})
+    fig.subplots_adjust(left=0.08, right=0.9, top=0.8, bottom=0.11, hspace=0.12)
+    ax.axhline(cap / 1e6, color=INK_2, lw=1, ls=(0, (4, 3)))
+    ax.text(value.index[-1] + 0.5, cap / 1e6, "starting\ncap", fontsize=8.5,
+            color=INK_2, va="center")
+    ax.plot(value.index, value.values, color=BLUE, marker="o", markersize=5,
+            markeredgecolor=SURFACE, markeredgewidth=1.5)
+    peak = value.idxmax()
+    ax.annotate(f"peak ${value.max():.2f}M", (peak, value.max()), xytext=(0, 8),
+                textcoords="offset points", ha="center", fontsize=8.5, color=INK)
+    ax.set_ylabel("Team value ($M)")
+    ax.yaxis.set_major_locator(matplotlib.ticker.MultipleLocator(0.5))
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:.1f}"))
+    ax2.bar(rounds.index, rounds["trades"], width=0.6, color=ORANGE)
+    ax2.set_ylabel("Trades")
+    ax2.set_yticks([0, 1, 2, 3])
+    ax2.set_xlabel("Round")
+    ax2.set_xticks(range(1, rounds.index[-1] + 1, 2))
+    _titles(fig, f"Trading grew the team's value from ${cap / 1e6:.2f}M to ${value.iloc[-1]:.2f}M",
+            "Squad value plus cash in the bank (the money available for trades). "
+            + (f"All trades were used by round {rounds.index[rounds['trades_left'] == 0][0]}."
+               if (rounds["trades_left"] == 0).any() else ""))
+    _save(fig, path)
+
+
+# ── Season review: players and positions ──────────────────────────────────────
+
+def _player_table(test: pd.DataFrame, nn_label: str, min_games: int = 10) -> pd.DataFrame:
+    df = test.assign(pos=_primary(test["positions"]))
+    agg = df.groupby("player_name").agg(
+        pos=("pos", "last"), team=("team", "last"), games=("next_score", "size"),
+        actual=("next_score", "mean"), predicted=(f"pred_{nn_label}", "mean"))
+    return agg[agg["games"] >= min_games]
+
+
+def plot_player_predictions(test: pd.DataFrame, path: Path, nn_label: str, season: int):
+    """Each player's average prediction vs average actual score, by position."""
+    apply_style()
+    players = _player_table(test, nn_label)
+    fig, axes = plt.subplots(2, 4, figsize=(14, 7.8), sharex=True, sharey=True)
+    fig.subplots_adjust(left=0.06, right=0.98, top=0.83, bottom=0.08, hspace=0.3, wspace=0.08)
+    lim = (0, max(players["actual"].max(), players["predicted"].max()) * 1.08)
+    for ax, pos in zip(axes.flat, POSITIONS):
+        sub = players[players["pos"] == pos]
+        ax.plot(lim, lim, color=BASELINE, lw=1)
+        ax.scatter(sub["predicted"], sub["actual"], s=22, color=BLUE, alpha=0.75,
+                   edgecolors=SURFACE, linewidths=0.6)
+        offsets = [(4, 3), (4, -10), (-4, 6)]
+        for (name, r), (dx, dy) in zip(sub.nlargest(3, "actual").iterrows(), offsets):
+            ax.annotate(short_name(name), (r["predicted"], r["actual"]), xytext=(dx, dy),
+                        textcoords="offset points", fontsize=7.5, color=INK,
+                        ha="left" if dx > 0 else "right")
+        corr = sub["predicted"].corr(sub["actual"])
+        ax.set_title(f"{POSITION_NAMES[pos]}  ·  r = {corr:.2f}", fontsize=10,
+                     color=INK, loc="left")
+        ax.set_xlim(lim)
+        ax.set_ylim(lim)
+    note = axes.flat[-1]
+    note.axis("off")
+    note.text(0.04, 0.9, "How to read it", fontsize=10.5, fontweight="semibold", color=INK,
+              transform=note.transAxes)
+    note.text(0.04, 0.8, "Each dot is a player (10+ games).\n"
+                         "Across: the model's average prediction,\n"
+                         "made before each game.\n"
+                         "Up: what the player actually averaged.\n\n"
+                         "On the line = predicted exactly.\n"
+                         "Above the line = beat expectations.\n"
+                         "r = correlation within the position.",
+              fontsize=9, color=INK_2, va="top", transform=note.transAxes, linespacing=1.5)
+    for ax in axes[1]:
+        ax.set_xlabel("Predicted (average)")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Actual (average)")
+    corr_all = players["predicted"].corr(players["actual"])
+    _titles(fig, f"Every player's {season} season: predicted vs actual",
+            f"Predictions made before each game, averaged per player. Across "
+            f"{len(players)} regulars the correlation is {corr_all:.2f}.")
+    _save(fig, path)
+
+
+def plot_position_analysis(test: pd.DataFrame, totals: pd.DataFrame, path: Path,
+                           nn_label: str, season: int):
+    """Scoring by position (left) and prediction error by position (right)."""
+    apply_style()
+    regulars = totals[totals["games_played"] >= 10]
+    regulars = regulars.assign(pos=_primary(regulars["positions"]))
+    df = test.assign(pos=_primary(test["positions"]))
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(13, 5.6), sharey=True)
+    fig.subplots_adjust(left=0.1, right=0.97, top=0.78, bottom=0.12, wspace=0.08)
+    y = np.arange(len(POSITIONS))[::-1]
+    rng = np.random.default_rng(0)
+    for yy, pos in zip(y, POSITIONS):
+        vals = regulars.loc[regulars["pos"] == pos, "avg_points"].values
+        ax.scatter(vals, yy + rng.uniform(-0.22, 0.22, len(vals)), s=14, color=DE_EMPHASIS,
+                   edgecolors=SURFACE, linewidths=0.5, zorder=2)
+        ax.plot([np.median(vals)] * 2, [yy - 0.32, yy + 0.32], color=BLUE, lw=3, zorder=3)
+        ax.text(vals.max() + 2, yy, f"median {np.median(vals):.0f}", fontsize=8.5,
+                color=INK_2, va="center")
+    ax.set_yticks(y, [POSITION_NAMES[p] for p in POSITIONS])
+    ax.set_xlabel(f"{season} average per game (each dot a player, 10+ games)")
+    ax.grid(axis="y", visible=False)
+    ax.set_xlim(right=ax.get_xlim()[1] + 15)
+
+    h = 0.36
+    series = [(nn_label, f"pred_{nn_label}", BLUE),
+              ("Season-average heuristic", "pred_Season average", ORANGE)]
+    for off, (label, col, colour) in zip((h / 2, -h / 2), series):
+        err = (df[col] - df["next_score"]).abs()
+        mae = err.groupby(df["pos"]).mean()
+        vals = [mae.get(p, np.nan) for p in POSITIONS]
+        ax2.barh(y + off, vals, height=h * 0.9, color=colour, label=label)
+        for yy, v in zip(y + off, vals):
+            ax2.text(v + 0.2, yy, f"{v:.1f}", va="center", fontsize=8, color=INK_2)
+    ax2.set_xlabel("Prediction error per game (MAE, points)")
+    ax2.grid(axis="y", visible=False)
+    ax2.legend(loc="upper right", bbox_to_anchor=(1.0, 1.12), ncols=2)
+    _titles(fig, "Position analysis",
+            "Left: how each position scored. Right: how far off the predictions were, "
+            "model vs. the season-average heuristic.")
+    _save(fig, path)
+
+
+def plot_top_players(test: pd.DataFrame, totals: pd.DataFrame, path: Path,
+                     nn_label: str, season: int, n: int = 4):
+    """Top scorers per position: actual average (bar) vs model expectation (tick)."""
+    apply_style()
+    info = totals.set_index("player_name")[["start_price", "price", "avg_points",
+                                           "games_played"]]
+    players = _player_table(test, nn_label).join(info)
+    rows = []
+    for pos in POSITIONS:
+        best = players[players["pos"] == pos].nlargest(n, "avg_points")
+        rows += [(pos, name, r) for name, r in best.iterrows()]
+
+    fig, ax = plt.subplots(figsize=(12, 11.5))
+    fig.subplots_adjust(left=0.22, right=0.97, top=0.9, bottom=0.06)
+    ys, headers, yy, prev = [], [], 0.0, None
+    for pos, _, _ in rows:
+        if pos != prev:
+            if prev is not None:
+                yy -= 0.8
+            headers.append((yy + 0.62, POSITION_NAMES[pos].upper()))
+            prev = pos
+        ys.append(yy)
+        yy -= 1
+    ys = np.array(ys)
+    actual = np.array([r["avg_points"] for _, _, r in rows])
+    pred = np.array([r["predicted"] for _, _, r in rows])
+    ax.barh(ys, actual, height=0.62, color=BLUE)
+    ax.scatter(pred, ys, marker="|", s=240, color=INK, linewidths=2.2, zorder=3)
+    for y0, label in headers:
+        ax.text(0, y0, label, fontsize=8.5, fontweight="semibold", color=MUTED,
+                ha="left", va="bottom")
+    for y0, (_, _, r) in zip(ys, rows):
+        ax.text(max(r["avg_points"], r["predicted"]) + 1.5, y0,
+                f"{r['avg_points']:.0f} avg · {int(r['games_played'])} games · "
+                rf"\${r['start_price'] / 1000:.0f}K → \${r['price'] / 1000:.0f}K",
+                fontsize=8.5, color=INK_2, va="center")
+    ax.set_yticks(ys, [f"{short_name(name)} ({r['team']})" for _, name, r in rows],
+                  fontsize=9)
+    ax.set_xlim(0, actual.max() * 1.55)
+    ax.set_xlabel(f"{season} average points per game")
+    ax.grid(axis="y", visible=False)
+    handles = [Rectangle((0, 0), 1, 1, color=BLUE),
+               plt.Line2D([], [], color=INK, marker="|", ls="", markersize=12, mew=2)]
+    ax.legend(handles, ["Actual average", "Model's average prediction"],
+              loc="lower right")
+    _titles(fig, f"The best of {season}, by position",
+            "Top scorers at each position, what the model expected of them, and how their "
+            "price moved (start → end of season).", y=0.985)
     _save(fig, path)
