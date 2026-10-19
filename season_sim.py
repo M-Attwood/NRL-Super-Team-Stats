@@ -17,13 +17,15 @@ then trade every week. The replay only uses what was known at the time.
 How trades are chosen is set by a Strategy:
 
   ORIGINAL   compares players one-for-one on predicted points over the next
-             3 rounds, assumes an unnamed player stays out, fixed trade bar.
+             3 rounds, assumes an unnamed player stays out, fixed trade bar,
+             spends trades as soon as they look worthwhile.
   IMPROVED   values the whole squad's best 18 (plus captain) in every
              remaining round, discounted, so depth for bye rounds counts;
              per-round predictions against each upcoming opponent; the
              availability model for who will be named; cash value of the
-             bank and of expected price rises; a trade bar that rises as
-             trades get scarce; no buying back a player just sold.
+             bank and of expected price rises; keeps 1.5 trades in hand per
+             round still to play, so it never runs dry before the last
+             round; no buying back a player just sold.
 
 Strategy parameters are tuned on a development season only (see
 season_review.py), never on the season being reported.
@@ -48,7 +50,6 @@ from scraper import load_fixtures
 log = logging.getLogger(__name__)
 
 LOOKAHEAD = 6            # rounds predicted individually against each opponent
-SEASON_PACE = TOTAL_TRADES / 26
 LINEUP_SLOTS = [(pos, n) for pos, n in ACTIVE_QUOTAS.items()] + [("FLEX", 1)]
 
 
@@ -61,15 +62,15 @@ class Strategy:
     lineup_aware: bool = True      # value the squad's best 18, not players one-for-one
     availability: bool = True      # use the availability model for future rounds
     cash_weight: float = 0.5       # share of cash assumed turned into points later
-    trade_bar: float = 20.0        # points a trade must add at the normal trade pace
-    pace_scaled: bool = True       # raise the bar when trades are scarce
+    trade_bar: float = 20.0        # points a trade must add to be worth making
+    reserve: float = 1.5           # trades (incl. boosts) kept in hand per round still to play
     cooldown: int = 3              # rounds before a sold player can be bought back
     candidates: int = 40           # trades scored in full per decision
 
 
 ORIGINAL = Strategy("Original strategy", horizon=3, discount=1.0, lineup_aware=False,
                     availability=False, cash_weight=0.0, trade_bar=15.0,
-                    pace_scaled=False, cooldown=0)
+                    reserve=0.0, cooldown=0)
 IMPROVED = Strategy("Improved strategy")
 
 
@@ -351,6 +352,14 @@ def initial_squad(inputs: SeasonInputs, strat: Strategy) -> tuple[list[str], flo
     return squad, SALARY_CAP - pick["total_price"]
 
 
+def spendable_trades(strat: Strategy, rnd: int, last_round: int, trades_used: int,
+                     boosts_left: int) -> int:
+    """Trades (and boosts) that can go this round while still keeping
+    `strat.reserve` in hand for every round after it."""
+    keep = int(np.ceil(strat.reserve * (last_round - rnd)))
+    return max(0, TOTAL_TRADES - trades_used + boosts_left - keep)
+
+
 def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
                     label: str | None = None) -> SeasonResult:
     data = inputs.rounds
@@ -369,13 +378,12 @@ def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
         if trading and rnd > 1:
             view = outlook_for(inputs, rnd, strat)
             limit = get_effective_trade_limit(rnd, trades_used)
-            pace = (TOTAL_TRADES - trades_used) / (max(data) - rnd + 1)
-            bar = strat.trade_bar * (min(3.0, SEASON_PACE / max(pace, 1e-6))
-                                     if strat.pace_scaled else 1.0)
+            bar = strat.trade_bar
+            spendable = spendable_trades(strat, rnd, max(data), trades_used, boosts_left)
             banned_in = {p for p, r in sold_in.items() if rnd - r < strat.cooldown}
             locked_out = {p for p, r in bought_in.items()
                           if rnd - r < strat.cooldown and f.at[p, "named"]}
-            while trades_used < TOTAL_TRADES:
+            while trades_used < TOTAL_TRADES and made < spendable:
                 boost = made >= limit                    # at most one boost per round
                 if made > limit or (boost and boosts_left == 0):
                     break

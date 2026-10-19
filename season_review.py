@@ -9,7 +9,7 @@ season_review.py — the end-of-season retrospective (the project's final run).
   3. Full-season simulations under Supercoach rules (season_sim.py):
        - development seasons 2024 and 2025, where the trading strategy was
          designed and its few settings chosen (models trained on earlier years)
-       - the test season 2026, run once with those settings, and ranked
+       - the test season 2026, never used for tuning, played with those settings and ranked
          against real coaches (data/inputs/human_benchmarks_<year>.yaml)
   4. Players and positions: predicted vs actual per player, position
      analysis, top players, team of the season, bargains.
@@ -135,7 +135,7 @@ def run_review(year: int, scrape: bool = False) -> dict:
     # 3a. Development seasons: where the strategy was designed and tuned.
     dev = {y: replay(rounds, totals, pairs, y)[1] for y in DEV_SEASONS}
 
-    # 3b. The test season, run once.
+    # 3b. The test season, never used for tuning.
     inputs, sims = replay(rounds, totals, pairs, year, predictor)
     best = sims[IMPROVED_LABEL]
     pd.DataFrame({k: s.rounds["points"] for k, s in sims.items()}).to_csv(

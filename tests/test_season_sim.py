@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from season_sim import (IMPROVED, ORIGINAL, RoundData, SeasonInputs, best_lineup,
-                        greedy_lineup_value, outlook_for, price_table)
+                        greedy_lineup_value, outlook_for, price_table, spendable_trades)
 
 
 def test_lineup_respects_active_quotas():
@@ -58,3 +58,12 @@ def test_original_strategy_assumes_unnamed_players_stay_out():
     e = outlook_for(_inputs(), 1, ORIGINAL).expected
     assert e.loc["bro", 2] == 50                      # bye now, counted back
     assert e.loc["par", 2] == 0                       # team played, not named: out
+
+
+def test_improved_strategy_keeps_trades_for_the_run_home():
+    # 46 trades + 5 boosts. Round 20 of 27: keep 1.5 x 7 rounds = 11 (rounded up).
+    assert spendable_trades(IMPROVED, 20, 27, trades_used=34, boosts_left=0) == 1
+    assert spendable_trades(IMPROVED, 20, 27, trades_used=36, boosts_left=0) == 0
+    assert spendable_trades(IMPROVED, 27, 27, trades_used=44, boosts_left=0) == 2
+    # The original strategy spends whatever is left.
+    assert spendable_trades(ORIGINAL, 20, 27, trades_used=36, boosts_left=0) == 10

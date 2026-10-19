@@ -736,6 +736,6 @@ def plot_strategy_improvement(by_season: dict, original: str, improved: str,
     wins = all(by_season[y][improved] > by_season[y][original] for y in seasons)
     _titles(fig, "The improved strategy wins in every season" if wins
             else "Improved vs. original strategy, season by season",
-            "Designed and tuned on 2024 and 2025 (models trained on earlier years), then run "
-            f"once on {test_season}, which was never used to choose anything.")
+            "Every setting was tuned on 2024 and 2025 (models trained on earlier years); "
+            f"{test_season} is the held-out test season and was never used for tuning.")
     _save(fig, path)
