@@ -6,28 +6,29 @@ then trade every week. The replay only uses what was known at the time.
 
   Pre-season   26 players at start-of-season prices under the $11.95M cap.
   Each round   - Prices move exactly as they did that season.
-               - Trades: 2 per round (3 in the big bye rounds, read from that
-                 season's draw), 46 for the season, plus 5 one-off boosts (max
-                 one a round). A trade must fit the bank (cash left + sale
-                 price) and the position quotas.
+               - Trades: 2 per round (4 in the big bye rounds, read from that
+                 season's draw), 46 for the season. 5 boosts allow one extra
+                 trade in a round; it still comes out of the 46. A trade must
+                 fit the bank (cash left + sale price) and the position quotas.
                - The scoring 18 (13 starters, 4 bench, 1 flex) is chosen from
                  squad players named that round by predicted points; the
                  highest prediction is captain (double points).
-               - Scored with the real points from that round.
+               - Scored with the real points from that round. In a big bye
+                 round only the best 13 scores of the 18 count.
 
 How trades are chosen is set by a Strategy:
 
   ORIGINAL   compares players one-for-one on predicted points over the next
              3 rounds, assumes an unnamed player stays out, fixed trade bar,
              spends trades as soon as they look worthwhile.
-  IMPROVED   values the whole squad's best 18 (plus captain) in every
-             remaining round, discounted, so depth for bye rounds counts;
+  IMPROVED   values the whole squad's best 18 (best 13 in a big bye round,
+             plus captain) in every remaining round, discounted, so depth
+             for bye rounds counts;
              per-round predictions against each upcoming opponent; the
              availability model for who will be named, State of Origin
              weeks included; cash value of the bank and of expected price
-             rises; keeps 1.5 trades in hand per round still to play (3 for
-             a big bye round), so it never runs dry before the last round
-             and can use a bye round's full allowance; no buying back a
+             rises; keeps 1.25 trades in hand per round still to play, so
+             it never runs dry before the last round; no buying back a
              player just sold.
 
 Strategy parameters are tuned on a development season only (see
@@ -53,6 +54,8 @@ from scraper import load_fixtures
 log = logging.getLogger(__name__)
 
 LOOKAHEAD = 6            # rounds predicted individually against each opponent
+SCORING = 18             # players whose scores count in a round
+BYE_SCORING = 13         # ... in a big bye round: the best 13 of the 18
 LINEUP_SLOTS = [(pos, n) for pos, n in ACTIVE_QUOTAS.items()] + [("FLEX", 1)]
 # Availability column for each kind of week (player_outlook.origin_weeks).
 AVAIL_BY_WEEK = {0: "p_next", 1: "p_after_origin", 2: "p_origin"}
@@ -68,8 +71,8 @@ class Strategy:
     availability: bool = True      # use the availability model for future rounds
     cash_weight: float = 0.5       # share of cash assumed turned into points later
     trade_bar: float = 20.0        # points a trade must add to be worth making
-    reserve: float = 1.5           # trades (incl. boosts) kept in hand per round still to
-                                   # play; a big bye round keeps its full allowance
+    reserve: float = 1.25          # trades kept in hand per round still to play
+    save_for_byes: bool = False    # also keep each later big bye round's full allowance
     cooldown: int = 3              # rounds before a sold player can be bought back
     candidates: int = 40           # trades scored in full per decision
 
@@ -100,6 +103,10 @@ class SeasonInputs:
     def bye_trades(self) -> dict[int, int]:
         """This season's big bye (Origin) rounds and their trade allowance."""
         return {r: BASE_TRADES_BIG_BYE for r, w in self.origin_week.items() if w == 2}
+
+    def counted(self, rnd: int) -> int:
+        """How many of the scoring 18 count in round `rnd`."""
+        return BYE_SCORING if rnd in self.bye_trades else SCORING
 
 
 def fixtures_for(rounds: pd.DataFrame, year: int) -> pd.DataFrame:
@@ -239,22 +246,37 @@ def best_lineup(players: pd.DataFrame, value_col: str) -> pd.Index:
     return players.index[players.index.isin(chosen)]
 
 
-def greedy_lineup_value(values: np.ndarray, eligible: list[list[str]]) -> float:
+def greedy_lineup_value(values: np.ndarray, eligible: list[list[str]],
+                        counted: int = SCORING) -> float:
     """Fast approximation of a round's best 18 plus captain: fill position
-    slots highest value first (how Supercoach's own emergencies work)."""
+    slots highest value first (how Supercoach's own emergencies work).
+    Only the top `counted` of them score (13 in a big bye round)."""
     open_slots = dict(LINEUP_SLOTS)
-    total, best = 0.0, 0.0
+    total, best, filled = 0.0, 0.0, 0
     for i in np.argsort(-values):
         v = values[i]
-        if v <= 0:
+        if v <= 0 or filled == counted:
             break
         for pos in eligible[i] + ["FLEX"]:
             if open_slots.get(pos, 0) > 0:
                 open_slots[pos] -= 1
                 total += v
                 best = max(best, v)
+                filled += 1
                 break
     return total + best          # captain doubles the top scorer
+
+
+def round_score(scores: pd.Series, captain: str | None, counted: int = SCORING) -> dict:
+    """Real points for a fielded lineup: the captain's score doubled, then the
+    best `counted` scores (all 18 normally, 13 in a big bye round)."""
+    effective = scores.copy()
+    if captain is not None:
+        effective[captain] *= 2
+    top = effective.nlargest(counted)
+    bonus = float(scores[captain]) if captain in top.index else 0.0
+    return {"points": float(top.sum()), "lineup_points": float(top.sum()) - bonus,
+            "captain_points": bonus, "empty_slots": counted - len(top)}
 
 
 # ── Valuing players and squads ────────────────────────────────────────────────
@@ -265,6 +287,7 @@ class Outlook:
     expected: pd.DataFrame       # player x round
     weights: np.ndarray          # discount per round
     cash_rate: float             # points per $ of cash, over the rest of the season
+    counted: list[int]           # scores that count in each round (18, or 13 in a bye)
 
 
 def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy) -> Outlook:
@@ -292,14 +315,15 @@ def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy) -> Outlook:
     weights = strat.discount ** np.arange(len(rounds_ahead))
     later = strat.discount ** np.arange(1, last - rnd + 1)
     cash_rate = strat.cash_weight * inputs.points_per_dollar * float(later.sum())
-    return Outlook(pd.DataFrame(expected), weights, cash_rate)
+    return Outlook(pd.DataFrame(expected), weights, cash_rate,
+                   [inputs.counted(h) for h in rounds_ahead])
 
 
 def squad_value(squad: list[str], view: Outlook, eligible: dict) -> float:
     e = view.expected.loc[squad].to_numpy()
     elig = [eligible[p] for p in squad]
-    return float(sum(w * greedy_lineup_value(e[:, j], elig)
-                     for j, w in enumerate(view.weights)))
+    return float(sum(w * greedy_lineup_value(e[:, j], elig, n)
+                     for j, (w, n) in enumerate(zip(view.weights, view.counted))))
 
 
 # ── Trades ────────────────────────────────────────────────────────────────────
@@ -376,14 +400,14 @@ def initial_squad(inputs: SeasonInputs, strat: Strategy) -> tuple[list[str], flo
 
 
 def spendable_trades(strat: Strategy, rnd: int, last_round: int, trades_used: int,
-                     boosts_left: int, bye_trades: dict[int, int] | None = None) -> int:
-    """Trades (and boosts) that can go this round while still keeping
-    `strat.reserve` in hand for every round after it, and a big bye round's
-    full allowance (`bye_trades`: round -> trades) for each one still to come."""
-    bye_trades = bye_trades or {}
+                     bye_trades: dict[int, int] | None = None) -> int:
+    """Trades that can go this round while still keeping `strat.reserve` in
+    hand for every round after it (with `strat.save_for_byes`, a big bye
+    round's full allowance, `bye_trades`: round -> trades, for each one to come)."""
+    bye_trades = bye_trades if strat.save_for_byes and bye_trades else {}
     later = range(rnd + 1, last_round + 1)
     keep = sum(max(strat.reserve, bye_trades.get(r, 0)) for r in later) if strat.reserve else 0
-    return max(0, TOTAL_TRADES - trades_used + boosts_left - int(np.ceil(keep)))
+    return max(0, TOTAL_TRADES - trades_used - int(np.ceil(keep)))
 
 
 def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
@@ -405,7 +429,7 @@ def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
             view = outlook_for(inputs, rnd, strat)
             limit = get_effective_trade_limit(rnd, trades_used, inputs.bye_trades)
             bar = strat.trade_bar
-            spendable = spendable_trades(strat, rnd, max(data), trades_used, boosts_left,
+            spendable = spendable_trades(strat, rnd, max(data), trades_used,
                                          inputs.bye_trades)
             banned_in = {p for p, r in sold_in.items() if rnd - r < strat.cooldown}
             locked_out = {p for p, r in bought_in.items()
@@ -427,21 +451,17 @@ def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
                                    "out_price": f.at[out, "price"], "in_price": f.at[inn, "price"],
                                    "predicted_gain": round(gain, 1), "boost": boost})
                 made += 1
+                trades_used += 1                         # a boosted trade still counts
                 if boost:
                     boosts_left -= 1
-                else:
-                    trades_used += 1
 
         members = f.loc[squad]
         named = members[members["named"]]
         lineup = named.loc[best_lineup(named, value_col)]
         captain = lineup[value_col].idxmax() if not lineup.empty else None
-        base = float(lineup["score"].sum())
-        bonus = float(lineup.at[captain, "score"]) if captain else 0.0
         round_rows.append({
-            "round": rnd, "points": base + bonus, "lineup_points": base,
-            "captain": captain, "captain_points": bonus, "named": len(named),
-            "empty_slots": 18 - len(lineup), "trades": made,
+            "round": rnd, **round_score(lineup["score"], captain, inputs.counted(rnd)),
+            "captain": captain, "named": len(named), "trades": made,
             "trades_left": TOTAL_TRADES - trades_used,
             "squad_value": float(members["price"].sum()), "bank": bank,
         })
@@ -449,7 +469,7 @@ def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
     name = label or (strat.name if trading else f"{strat.name}, no trades")
     out = SeasonResult(name, pd.DataFrame(round_rows).set_index("round"),
                        pd.DataFrame(trade_rows), initial, squad)
-    log.info("%d %-40s %6.0f pts, %d trades + %d boosts, %d empty slots", inputs.year,
+    log.info("%d %-40s %6.0f pts, %d trades (%d boosted), %d empty slots", inputs.year,
              name, out.total, trades_used, TRADE_BOOSTS - boosts_left,
              int(out.rounds["empty_slots"].sum()))
     return out

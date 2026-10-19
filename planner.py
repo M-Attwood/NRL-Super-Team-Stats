@@ -50,12 +50,12 @@ TOTAL_TRADES = 46
 SCORING_SLOTS = 18
 TRADE_BOOSTS = 5
 
-BIG_BYE_ROUNDS = {12, 15, 18}  # 7 teams on bye → 3 base trades
+BIG_BYE_ROUNDS = {12, 15, 18}  # 7 teams on bye → 4 base trades
 BASE_TRADES_NORMAL = 2
-BASE_TRADES_BIG_BYE = 3
+BASE_TRADES_BIG_BYE = 4
 
 # Trade reservation: keep at least this many trades available for critical rounds
-TRADE_RESERVATIONS = {12: 3, 15: 3, 18: 3}  # 9 reserved total
+TRADE_RESERVATIONS = {r: BASE_TRADES_BIG_BYE for r in BIG_BYE_ROUNDS}  # 12 reserved total
 
 # ── Derived lookups ──────────────────────────────────────────────────────────
 ROUND_BYES: dict[int, set[str]] = {}

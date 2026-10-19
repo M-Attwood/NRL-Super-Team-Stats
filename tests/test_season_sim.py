@@ -1,11 +1,14 @@
 """Tests for the season simulator's rules: lineup quotas, price history,
 squad valuation and who counts as available in future rounds."""
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from season_sim import (IMPROVED, ORIGINAL, RoundData, SeasonInputs, best_lineup,
-                        greedy_lineup_value, outlook_for, price_table, spendable_trades)
+                        greedy_lineup_value, outlook_for, price_table, round_score,
+                        spendable_trades)
 
 
 def test_lineup_respects_active_quotas():
@@ -22,6 +25,21 @@ def test_greedy_lineup_counts_quotas_and_doubles_captain():
     eligible = [["HOK"], ["HOK"], ["HOK"], ["HOK"], ["FLB"]]
     # 2 HOK + 1 FLEX hooker + FLB = 90+80+70+10, captain doubles the 90.
     assert greedy_lineup_value(values, eligible) == 90 + 80 + 70 + 10 + 90
+    # A big bye round counts only the best few: here the top 2 plus captain.
+    assert greedy_lineup_value(values, eligible, counted=2) == 90 + 80 + 90
+
+
+def test_bye_rounds_count_the_best_13_with_the_captain_doubled():
+    scores = pd.Series([10.0 * i for i in range(1, 19)], index=[f"p{i}" for i in range(1, 19)])
+    # Normal round: all 18 plus the captain's score again.
+    assert round_score(scores, "p18")["points"] == scores.sum() + 180
+    # Bye round: best 13 after doubling the captain (p1 at 20 is not among them).
+    bye = round_score(scores, "p1", counted=13)
+    assert bye["points"] == sum(10.0 * i for i in range(6, 19))
+    assert bye["captain_points"] == 0 and bye["empty_slots"] == 0
+    # Only 9 fielded: every score counts and 4 of the 13 spots are empty.
+    few = round_score(scores.iloc[:9], "p9", counted=13)
+    assert few["points"] == scores.iloc[:9].sum() + 90 and few["empty_slots"] == 4
 
 
 def test_price_table_carries_prices_through_games_missed():
@@ -72,21 +90,20 @@ def test_original_strategy_assumes_unnamed_players_stay_out():
 
 
 def test_improved_strategy_keeps_trades_for_the_run_home():
-    # 46 trades + 5 boosts. Round 20 of 27: keep 1.5 x 7 rounds = 11 (rounded up).
-    assert spendable_trades(IMPROVED, 20, 27, trades_used=34, boosts_left=0) == 1
-    assert spendable_trades(IMPROVED, 20, 27, trades_used=36, boosts_left=0) == 0
-    assert spendable_trades(IMPROVED, 27, 27, trades_used=44, boosts_left=0) == 2
+    # 46 trades, boosted ones included. Round 20 of 27: keep 1.25 x 7 = 8.75 -> 9.
+    assert spendable_trades(IMPROVED, 20, 27, trades_used=36) == 1
+    assert spendable_trades(IMPROVED, 20, 27, trades_used=37) == 0
+    assert spendable_trades(IMPROVED, 27, 27, trades_used=44) == 2
     # The original strategy spends whatever is left.
-    assert spendable_trades(ORIGINAL, 20, 27, trades_used=36, boosts_left=0) == 10
+    assert spendable_trades(ORIGINAL, 20, 27, trades_used=36) == 10
 
 
-def test_reserve_saves_a_big_bye_rounds_full_allowance():
-    byes = {12: 3, 15: 3, 18: 3}
-    # Round 17: keep 3 for round 18 plus 1.5 x 9 later rounds = 16.5 -> 17.
-    assert spendable_trades(IMPROVED, 17, 27, trades_used=27, boosts_left=0,
-                            bye_trades=byes) == 2
-    # Round 18 itself keeps only 1.5 x 9 = 13.5 -> 14, so all 3 trades can go.
-    assert spendable_trades(IMPROVED, 18, 27, trades_used=29, boosts_left=0,
-                            bye_trades=byes) == 3
-    assert spendable_trades(ORIGINAL, 17, 27, trades_used=27, boosts_left=0,
-                            bye_trades=byes) == 19
+def test_reserve_can_save_a_big_bye_rounds_full_allowance():
+    byes = {12: 4, 15: 4, 18: 4}
+    saver = replace(IMPROVED, reserve=1.5, save_for_byes=True)
+    # Round 17: keep 4 for round 18 plus 1.5 x 9 later rounds = 17.5 -> 18.
+    assert spendable_trades(saver, 17, 27, trades_used=26, bye_trades=byes) == 2
+    # Round 18 itself keeps only 1.5 x 9 = 13.5 -> 14, so all 4 trades can go.
+    assert spendable_trades(saver, 18, 27, trades_used=28, bye_trades=byes) == 4
+    # Off by default: keep 1.25 x 10 = 12.5 -> 13, bye rounds paced like any other.
+    assert spendable_trades(IMPROVED, 17, 27, trades_used=26, bye_trades=byes) == 7

@@ -483,10 +483,11 @@ def plot_season_simulation(results: dict, highlight: str, path: Path, season: in
     total = main["points"].sum()
     gain = total - results[compare]["points"].sum()
     _titles(fig, f"The full {season} season under Supercoach rules: {total:,.0f} points",
-            f"Pre-season squad, then trades every round (46 + 5 boosts), with real prices, team "
-            f"lists and byes; captain doubled. {gain:+,.0f} vs. the original trading strategy.")
+            f"Pre-season squad, then trades every round (46, up to 5 boosted rounds), with real "
+            f"prices, team lists and byes; captain doubled. {gain:+,.0f} vs. the original trading strategy.")
     _footnote(fig, "Every decision uses only what was known before that round; points are the "
-                   f"real {season} scores. Scoring 18 = 13 starters + 4 bench + 1 flex.")
+                   f"real {season} scores. Scoring 18 = 13 starters + 4 bench + 1 flex "
+                   f"(best 13 count in the bye rounds).")
     _save(fig, path)
 
 

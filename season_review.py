@@ -222,7 +222,7 @@ def run_review(year: int, scrape: bool = False) -> dict:
             "empty_scoring_slots": {k: int(s.rounds["empty_slots"].sum())
                                     for k, s in sims.items()},
             "bye_rounds_12_15_18": round(float(rr.loc[[12, 15, 18], "points"].sum())),
-            "trades_used": int((~best.trades["boost"]).sum()),
+            "trades_used": int(len(best.trades)),
             "boosts_used": int(best.trades["boost"].sum()),
             "final_team_value": round(float(rr["squad_value"].iloc[-1] + rr["bank"].iloc[-1])),
         },
