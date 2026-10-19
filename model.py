@@ -78,6 +78,7 @@ FEATURES = [
 TARGET = "next_score"
 
 NN_LABEL = "Wide & Deep NN"
+MODEL_LABEL = "NN + ridge ensemble"      # the production predictor
 ORACLE_LABEL = "Hindsight oracle"
 
 MAX_GAP = 5            # rounds_since_last is capped (off-season ≈ long gap)
@@ -92,8 +93,10 @@ def split_season(df: pd.DataFrame, year: int) -> tuple[pd.DataFrame, pd.DataFram
     """Split one season's scrape into (per-round rows, season-total rows)."""
     df = df.copy()
     is_total = df["current_round"].astype(str).str.strip() == "Totals"
-    totals = df[is_total].copy()
-    rounds = df[~is_total].copy()
+    # The site occasionally repeats a row (e.g. 14 duplicate season totals in
+    # 2023); keep one per player, and one per player-round.
+    totals = df[is_total].drop_duplicates("player_name").copy()
+    rounds = df[~is_total].drop_duplicates(["player_name", "current_round"]).copy()
 
     rounds["year"] = year
     rounds["round"] = pd.to_numeric(rounds["current_round"], errors="coerce")
@@ -422,12 +425,46 @@ def nn_predict(model, df: pd.DataFrame) -> np.ndarray:
     return model.predict(X, verbose=0, batch_size=2048).flatten()
 
 
-def train_ridge(pairs: pd.DataFrame):
+class LinearModel:
+    """Standardised ridge regression stored as plain numbers, so it can live
+    in the JSON model card instead of a pickle."""
+
+    def __init__(self, mean, scale, coef, intercept):
+        self.mean, self.scale = np.asarray(mean), np.asarray(scale)
+        self.coef, self.intercept = np.asarray(coef), float(intercept)
+
+    def predict(self, df: pd.DataFrame) -> np.ndarray:
+        X = df[FEATURES].to_numpy(float)
+        return ((X - self.mean) / self.scale) @ self.coef + self.intercept
+
+    def to_dict(self) -> dict:
+        return {"mean": self.mean.tolist(), "scale": self.scale.tolist(),
+                "coef": self.coef.tolist(), "intercept": self.intercept}
+
+
+def train_ridge(pairs: pd.DataFrame) -> LinearModel:
     from sklearn.linear_model import Ridge
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
-    return make_pipeline(StandardScaler(), Ridge(alpha=1.0)).fit(
-        pairs[FEATURES], pairs[TARGET])
+    X = pairs[FEATURES].to_numpy(float)
+    mean, scale = X.mean(axis=0), X.std(axis=0)
+    scale[scale == 0] = 1.0
+    ridge = Ridge(alpha=1.0).fit((X - mean) / scale, pairs[TARGET])
+    return LinearModel(mean, scale, ridge.coef_, ridge.intercept_)
+
+
+class Predictor:
+    """The production score model: the average of the Wide & Deep network
+    and a ridge regression. Chosen because the average ranked players better
+    than either alone on both development seasons (2024, 2025)."""
+
+    def __init__(self, network, ridge: LinearModel):
+        self.network, self.ridge = network, ridge
+
+    def predict(self, df: pd.DataFrame) -> np.ndarray:
+        return (nn_predict(self.network, df) + self.ridge.predict(df)) / 2
+
+
+def train_predictor(pairs: pd.DataFrame) -> Predictor:
+    return Predictor(train_network(pairs), train_ridge(pairs))
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
@@ -454,7 +491,7 @@ def evaluate_holdout(pairs: pd.DataFrame, test_year: int):
     """Train on seasons before `test_year`, predict every `test_year` game.
 
     Returns ({model_name: metrics}, test frame with one prediction column
-    per model, the network trained without `test_year`) — the honest,
+    per model, the Predictor trained without `test_year`) — the honest,
     out-of-time estimate of model quality.
     """
     train = pairs[pairs["year"] < test_year]
@@ -463,9 +500,9 @@ def evaluate_holdout(pairs: pd.DataFrame, test_year: int):
              len(train), train["year"].min(), train["year"].max(),
              len(test), test_year)
 
-    network = train_network(train)
-    preds = {NN_LABEL: nn_predict(network, test),
-             "Ridge regression": train_ridge(train).predict(test[FEATURES])}
+    predictor = train_predictor(train)
+    nn, ridge = nn_predict(predictor.network, test), predictor.ridge.predict(test)
+    preds = {MODEL_LABEL: (nn + ridge) / 2, NN_LABEL: nn, "Ridge regression": ridge}
     preds.update(baseline_predictions(test, fit_price_baseline(train)))
     # Not a real model: it knows each player's average over the very games
     # being predicted. It marks how much error is irreducible game-day noise.
@@ -478,21 +515,23 @@ def evaluate_holdout(pairs: pd.DataFrame, test_year: int):
         log.info("  %-24s MAE %.2f  RMSE %.2f  R2 %.3f  rank-corr %.3f", name,
                  metrics[name]["mae"], metrics[name]["rmse"],
                  metrics[name]["r2"], metrics[name]["rank_corr"])
-    return metrics, test, network
+    return metrics, test, predictor
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
 
-def save_model(model, card: dict) -> None:
+def save_model(predictor: Predictor, card: dict) -> None:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    model.save(MODEL_PATH)
+    predictor.network.save(MODEL_PATH)
+    card = {**card, "ridge": predictor.ridge.to_dict()}
     MODEL_CARD_PATH.write_text(json.dumps(card, indent=2), encoding="utf-8")
     log.info("Model saved -> %s", MODEL_PATH)
 
 
-def load_model():
+def load_model() -> Predictor:
     from tensorflow import keras
-    return keras.models.load_model(MODEL_PATH)
+    ridge = LinearModel(**load_model_card()["ridge"])
+    return Predictor(keras.models.load_model(MODEL_PATH), ridge)
 
 
 def load_model_card() -> dict:
@@ -504,9 +543,10 @@ def load_model_card() -> dict:
 def train_production_model(pairs: pd.DataFrame, holdout_metrics: dict | None,
                            test_year: int | None):
     """Train on every season and save alongside a model card."""
-    model = train_network(pairs)
+    predictor = train_predictor(pairs)
     card = {
         "target": "next-game Supercoach score",
+        "model": "mean of a Wide & Deep network and a ridge regression",
         "features": FEATURES,
         "train_seasons": sorted(int(y) for y in pairs["year"].unique()),
         "train_games": int(len(pairs)),
@@ -514,22 +554,22 @@ def train_production_model(pairs: pd.DataFrame, holdout_metrics: dict | None,
         "holdout_season": test_year,
         "holdout_metrics": holdout_metrics,
     }
-    save_model(model, card)
-    return model
+    save_model(predictor, card)
+    return predictor
 
 
 # ── Prediction ────────────────────────────────────────────────────────────────
 
-def predict_next_round(frame: pd.DataFrame, model=None,
+def predict_next_round(frame: pd.DataFrame, model: Predictor | None = None,
                        price_fit: tuple[float, float] | None = None) -> pd.DataFrame:
     """Add `predicted_points` to a frame from build_prediction_frame.
     Rookies (no games in this or last season) use the price-implied
-    estimate — the network has never seen a zero-game history."""
+    estimate — the models have never seen a zero-game history."""
     model = model or load_model()
     frame = frame.copy()
     slope, intercept = price_fit or load_model_card().get("price_baseline",
                                                           (1 / 10_000, 0.0))
-    preds = nn_predict(model, frame)
+    preds = model.predict(frame)
     price_implied = frame["price"] * slope + intercept
     frame["predicted_points"] = np.where(frame["is_rookie"], price_implied, preds)
     frame["predicted_points"] = frame["predicted_points"].clip(lower=0)

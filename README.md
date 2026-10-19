@@ -8,12 +8,12 @@
 An end-to-end machine-learning system that plays **NRL Supercoach**, the rugby league fantasy game, from start to finish:
 
 - it picks a 26-man squad under the $11.95M salary cap before round 1
-- each week it predicts every player's score
-- it recommends trades within the game's rules to adapt through the season
+- each week it predicts every player's score, whether they'll be picked, and how their price will move
+- it trades within the game's rules to adapt through the season
 
-It scrapes player statistics, predicts scores with a TensorFlow neural network, and makes its selections with integer linear programming.
+It scrapes player statistics, predicts scores with a TensorFlow network averaged with a ridge regression, and makes its selections with integer linear programming.
 
-I ran it live during the 2026 season. This repository is the final version: the code is cleaned up, and the whole 2026 season is replayed under the game's rules to show what the system would have scored.
+I ran it live during the 2026 season. This repository is the final version: the code is cleaned up, the trading strategy has been rebuilt, and whole seasons are replayed under the game's rules to show what the system would have scored.
 
 ![The full 2026 season under Supercoach rules](docs/images/season_simulation.png)
 
@@ -21,12 +21,12 @@ I ran it live during the 2026 season. This repository is the final version: the 
 
 | | |
 |---|---|
-| **Full 2026 season, game rules** | **29,269 points**, an average of 1,084 a round. That is 1,186 more than the same rules driven by season averages, and 4,004 more than never trading |
-| **Against real coaches** | Beats the **average 2026 coach** (28,765) and my own real team (27,956). Still well short of the top 10% of coaches (35,357 on average) and the winner (37,196) |
-| **Team value** | Grew from $11.95M to **$13.56M** through 46 trades and 5 boosts |
-| **Points predictor** | Trained on 2022–2025, then predicted all **6,407 games of 2026** before each was played. Average error was **17.0 pts per game**, vs 18.1 for the season-average heuristic, and R² rose from 0.15 to 0.24 |
-| **Per player** | Each regular's average prediction correlates **0.89** with what they actually averaged |
-| **Engineering** | Leak-proof features, Wide & Deep network, CBC integer programs, 45 unit tests, GitHub Actions CI |
+| **Full 2026 season, game rules** | **32,117 points**, an average of 1,190 a round. That's 2,582 more than the original trading strategy and 6,561 more than never trading |
+| **Against real coaches** | Beats the **average 2026 coach by 3,352** and my own real team by 4,161. It finishes 3,240 short of the top-10% average (35,357); the winner scored 37,196 |
+| **Honest testing** | The strategy was designed and tuned on the 2024 and 2025 seasons only; 2026 was run once. The improved strategy wins in all three seasons |
+| **Points predictor** | Trained on 2022–2025, then predicted all **6,407 games of 2026** before each was played. Average error was **16.97 pts per game**, vs 18.08 for the season-average heuristic, and R² rose from 0.15 to 0.24 |
+| **Supporting models** | Availability (will the player be named?) AUC **0.89**; a 3-game price-change forecast |
+| **Engineering** | Leak-proof features, Wide & Deep network, gradient-boosted trees, CBC integer programs, 50 unit tests, GitHub Actions CI |
 
 ## How it works
 
@@ -34,16 +34,15 @@ I ran it live during the 2026 season. This repository is the final version: the 
 flowchart LR
     A[nrlsupercoachstats.com<br/>jqGrid JSON API] -->|scraper.py| B[(Per-round player rows<br/>2022–2026)]
     B -->|model.py| C[Leak-free features<br/>state after game k]
-    C --> D[Wide & Deep NN<br/>predicts game k+1]
-    D --> E[Predicted points<br/>every player, every round]
+    C --> D[NN + ridge ensemble<br/>score in game k+1]
+    B -->|player_outlook.py| O[Availability +<br/>price-change models]
+    D & O --> E[Expected points, every player,<br/>every remaining round]
     E -->|optimizer.py| F[Pre-season squad<br/>26 players under the cap]
-    E -->|trade_advisor.py| G[Weekly trades<br/>cap, quotas, byes]
-    E -->|planner.py| H[27-round bye / trade plan]
-    F & G --> I[season_sim.py<br/>replay 2026 under game rules]
+    E -->|season_sim.py| G[Trades and lineups<br/>under game rules]
 ```
 
-1. **Scrape** ([scraper.py](scraper.py)). The site's stats table is served by a jqGrid JSON endpoint. Each row is one player-round, with the score, minutes and about 80 stat fields. The scraper uses rotating user-agents, jittered delays and exponential backoff, and caches finished seasons.
-2. **Predict** ([model.py](model.py)). For each game a player has played, the pipeline builds their state from earlier games only:
+1. **Scrape** ([scraper.py](scraper.py)). The site's stats table is served by a jqGrid JSON endpoint. Each row is one player-round, with the score, minutes and about 80 stat fields. The scraper is polite (rotating user-agents, jittered delays, exponential backoff) and caches finished seasons.
+2. **Predict scores** ([model.py](model.py)). For each game a player has played, the pipeline builds their state from earlier games only:
    - form and volatility
    - minutes, and whether they started or came off the bench
    - how their points are scored
@@ -51,26 +50,52 @@ flowchart LR
    - last season's average
    - how generous the next opponent is to their position, and how strong their own team is
 
-   A Keras **Wide & Deep** network predicts the next game's score from that state. [Tests](tests/test_no_target_leak.py) prove that changing a future score never changes an earlier feature.
-3. **Pick a squad** ([optimizer.py](optimizer.py)). A PuLP/CBC integer program chooses 26 players, maximising the predicted points of the 18 who score. Constraints: the salary cap, Supercoach's position quotas, dual-position eligibility, at most 5 players per club, and backup cover at every starting position.
-4. **Trade and plan** ([trade_advisor.py](trade_advisor.py), [planner.py](planner.py)).
-   - **Trade advisor:** ranks every cap-legal, quota-legal trade by predicted points gained over the next 3 rounds, counting byes, and flags State of Origin risk.
-   - **Planner:** schedules trades around the big bye rounds.
-5. **Replay the season** ([season_sim.py](season_sim.py)). Plays a finished season under the game's rules using only information available before each round (details below).
+   A Keras **Wide & Deep** network and a ridge regression each predict the next game's score from that state, and the system uses their average. [Tests](tests/test_no_target_leak.py) prove that changing a future score never changes an earlier feature.
+3. **Predict availability and price** ([player_outlook.py](player_outlook.py)). Gradient-boosted trees estimate:
+   - **availability:** the chance a player is named for their team's next game, from recent games, minutes, role, and how many games in a row they've missed
+   - **price change:** how much their price will move over the next three games (Supercoach prices react to scores against the break-even)
+4. **Pick a squad** ([optimizer.py](optimizer.py)). A PuLP/CBC integer program chooses 26 players, maximising the predicted points of the 18 who score. Constraints: the salary cap, Supercoach's position quotas, dual-position eligibility, at most 5 players per club, and backup cover at every starting position.
+5. **Trade through the season** ([season_sim.py](season_sim.py)). Each round, it scores every legal trade by how much it improves the squad's expected best 18 (plus captain) across *all* remaining rounds (details below).
 
 ## 1. The full 2026 season, played by the system
 
-The simulation plays 2026 the way a human coach would:
+The simulation plays a season the way a human coach would, using only information available before each round:
 
-- **Pre-season.** 26 players at start-of-season prices under the $11.95M cap. Round-1 team lists are public before lockout, so players not named are treated as unavailable.
+- **Pre-season.** 26 players at start-of-season prices under the $11.95M cap.
 - **Every round:**
-  - **Prices** move exactly as they did in 2026.
-  - **Trades:** up to 2 (3 in the big bye rounds 12, 15 and 18), 46 for the season, plus 5 one-off boosts. Each trade must fit the bank and the position quotas, and is chosen by predicted points gained over the next 3 rounds.
-  - **Lineup:** the scoring 18 (13 starters, 4 bench, 1 flex) comes from players named that round, by predicted points. The highest prediction is captain, worth double.
-  - **Scoring:** real 2026 points.
-- **Comparisons.** The same rules driven by season averages (the most common heuristic), and the model's opening squad with no trades.
+  - **Prices** move exactly as they did that season.
+  - **Trades:** up to 2 (3 in the big bye rounds 12, 15 and 18), 46 for the season, plus 5 one-off boosts. Every trade must fit the bank and the position quotas.
+  - **Lineup:** the scoring 18 (13 starters, 4 bench, 1 flex) comes from players named that round. The highest prediction is captain, worth double.
+  - **Scoring:** the real points from that round.
 
-The chart at the top shows the result: **29,269 points**. The team-value chart below shows how trading turned a $11.95M squad into a $13.56M one.
+### How the trading strategy was improved
+
+The first version judged trades one player at a time, on predicted points over the next 3 rounds. It finished an average coach. The rebuilt strategy:
+
+- **Looks to the end of the season.** Each trade is valued over every remaining round, with each further round weighted 10% less, using a separate prediction for each upcoming opponent.
+- **Values the whole squad.** It computes the squad's best 18 plus captain in every future round, so depth for bye rounds and injuries counts automatically.
+- **Knows who will play.** The availability model replaces "if they weren't named, assume they're out".
+- **Values cash.** Money freed up and expected price rises count as future points.
+- **Stops churn.** No buying back a player sold in the last 3 rounds.
+
+To avoid fitting the season being reported, **every design choice and setting was made on the 2024 and 2025 seasons**, with all models trained only on earlier years. 2026 was then run once:
+
+![Improved vs original strategy by season](docs/images/strategy_improvement.png)
+
+What each part contributes, averaged over the two development seasons (2026 not used):
+
+| Change, starting from the improved strategy | Average season | Effect |
+|---|---:|---:|
+| Improved strategy | 30,907 | |
+| Only look 3 rounds ahead | 21,929 | −8,978 |
+| Value trades one player at a time instead of the whole squad | 28,709 | −2,198 |
+| Ignore cash and price rises | 30,270 | −637 |
+| Allow immediate buy-backs | 30,825 | −82 |
+| Drop the availability model | 31,416 | +509 |
+
+Looking ahead and valuing the whole squad do the heavy lifting. The availability model is accurate (AUC 0.89), but its effect on season totals was mixed: it helped in 2025 and hurt in 2024. I kept it because it's the principled approach, and report the result rather than switching it off after seeing 2026.
+
+The team-value chart shows the strategy now buys premiums. 13 of its 51 trades bought a $650K+ player, against 7 for the original strategy.
 
 ![Team value over the season](docs/images/season_team_value.png)
 
@@ -80,21 +105,21 @@ Every trade is logged in [`season_simulation_trades.csv`](outputs/season_review/
 
 ![Against real coaches](docs/images/human_comparison.png)
 
-The real-coach figures come from the SuperCoach app's end-of-season scoring trends. The simulated team beats the average coach by 504 points and my own real 2026 team by 1,313. It is 6,088 points short of the top-10% average, roughly 226 points a round, and the round-by-round log shows where most of that goes:
+The real-coach figures come from the SuperCoach app's end-of-season scoring trends. The simulated team beats the average coach by 3,352 points; the original strategy beat them by 770. It is 3,240 short of the top-10% average, about 120 points a round:
 
-- **Bye rounds, about 1,200 points.** In rounds 12, 15 and 18 it scored 2,190 in total, against its normal 1,128 a round. It doesn't plan ahead to field 18 players through the byes, which top coaches do.
-- **Running out of trades, about 600 points.** All 46 trades were used by round 23, and the last four rounds averaged 997 against 1,157 earlier in the season.
-- **Squad building, the remaining ~4,300.** The trade rule only chases predicted points over the next three rounds. It never deliberately buys cheap players to profit from their price rises, which is how top coaches afford a full team of premiums. It also sometimes sells a player and buys them back a round later.
+- **Bye rounds, about 700 points.** It scored 2,924 across rounds 12, 15 and 18, against a normal 1,216 a round.
+- **Trades ran out in round 23, about 700.** The last four rounds averaged 1,043.
+- **The rest, about 1,800:** stronger squads and sharper captaincy from the best coaches.
 
-The predictions are not the bottleneck. Section 3 shows they pick better teams than the alternatives. The next gains are in strategy: wiring in the bye planner ([planner.py](planner.py)), pacing trades across the season, and valuing future price rises.
+**An honest caveat.** In 2026, the same improved strategy driven by plain season averages (instead of the model's predictions) scored 32,757, slightly ahead of the model's 32,117. In both development seasons the model won clearly (by 2,766 and 3,297). Across all three seasons the model leads by 5,423 points. A single season is a noisy test.
 
 ## 2. Is the points predictor any good?
 
-Everything above depends on the predicted points, so the predictor is tested on its own. I trained it on 2022–2025 only and asked it to predict all 6,407 games of 2026, each before it was played.
+Everything above depends on the predicted points, so the predictor is also tested on its own. Trained on 2022–2025 only, it predicted all 6,407 games of 2026, each before it was played.
 
 ![Model benchmark](docs/images/model_benchmark.png)
 
-It beats the three heuristics a fantasy coach would use: season average, last-3 form, and the average implied by price. It also ranks players better within each round, which is what squad selection needs. It is level with a ridge regression. Deeper networks, other losses, ensembles and extra features all landed within ±0.1 points of error. Even a *hindsight oracle* that knows each player's true 2026 average misses by 15.9 points per game, so most of the remaining error is game-day randomness.
+It beats every heuristic a fantasy coach would use: season average, last-3 form, and the average implied by price. Averaging the network with a ridge regression gives the lowest error of any method. That ensemble was adopted because it beat the network alone on both development seasons, not on 2026. Deeper networks, other losses and extra features all landed within ±0.1 points. Even a *hindsight oracle* that knows each player's true 2026 average misses by 15.9 points per game, so most of the remaining error is game-day randomness.
 
 <p float="left">
   <img src="docs/images/error_by_round.png" width="58%" />
@@ -103,7 +128,7 @@ It beats the three heuristics a fantasy coach would use: season average, last-3 
 
 The edge is largest early in the season, when a three-game average is unreliable and the model leans on last season and price. The predictions are also well calibrated: when it predicts 60, players average about 60.
 
-**Predicted vs actual for every player.** Each dot is one player's 2026 season: what the model predicted for them on average, against what they actually averaged.
+**Predicted vs actual for every player.** Each dot is one player's 2026 season: the model's average prediction for them against what they actually averaged (correlation 0.90 across 329 regulars).
 
 ![Predicted vs actual per player](docs/images/player_predicted_vs_actual.png)
 
@@ -115,11 +140,11 @@ The edge is largest early in the season, when a three-game average is unreliable
 
 > **This is a controlled experiment, not a game simulation.** Real Supercoach only allows a couple of trades a round (that's section 1). Here, every round each method picks a **brand-new squad** from scratch. Squad history and trade limits are removed, so the only difference between the teams is how each method values players.
 
-For each of the 27 rounds, three methods (the model, the season average, and price alone) each picked the best 26-man squad under the cap from the players named that round, at that round's prices. Each squad was scored by its best 18 on real results.
+For each of the 27 rounds of 2026, three methods (the model, the season average, and price alone) each picked the best 26-man squad under the cap from the players named that round, at that round's prices. Each squad was scored by its best 18 on real results.
 
 ![Predictor comparison](docs/images/predictor_comparison.png)
 
-With the same optimizer and only the player valuations changed, the model's squads scored 32,086, against 31,534 for price alone and 30,401 for season averages. They beat price-only picks in 18 of 27 rounds and season-average picks in 21 of 27. Better predictions turn into better teams.
+The model's squads scored 31,804, against 31,534 for price alone and 30,401 for season averages. They beat price-only picks in 17 of 27 rounds and season-average picks in 20 of 27.
 
 ## 4. 2026 in hindsight
 
@@ -136,43 +161,44 @@ Below, the bargains: the players whose output was far above what their price imp
 ## What I learned
 
 - **My first model was cheating, and catching it was the most valuable part of the project.** It predicted a player's season average from stats that included the five scoring components of that same average (base, attack, create, evade, negative). Those components add up to the answer, so it showed R² = 0.98 without forecasting anything. I rebuilt it as a strict "past games → next game" problem. R² dropped to an honest 0.24, but that model holds up on games it has never seen.
-- **On noisy tabular data a linear model is a serious baseline.** A plain neural network lost to ridge regression, and a Wide & Deep design matched it. Reporting the tie is more useful than tuning on the test set until the network wins.
-- **Good predictions are necessary but not sufficient.** The predictor beats every heuristic and the simulated team beats the average coach, but the best humans win on long-term planning: byes, trade pacing and cash generation. A three-round greedy trader can't see far enough ahead for that.
-- **The market is efficient pre-season; the edge comes in-season.** Before round 1, the model's valuations and Supercoach's own prices rank players about equally well (r = 0.64 vs 0.63 against final averages). Once real form data arrives, the model pulls ahead.
-- **Evaluation design matters as much as the model.** A single pre-season squad is one noisy sample, so I tested the predictor with 27 independent picks and then the full season under real rules. The optimizer's team-diversity bonus suits season-long squads but is the wrong objective for a one-off pick. Getting these right changed the conclusions more than any hyperparameter did.
+- **Strategy mattered more than prediction accuracy.** With the same predictions, looking to the end of the season and valuing the whole squad's lineup added about 2,600 points in 2026. Every tweak to the predictor itself moved error by less than 0.1 points.
+- **Keep a test set you never touch.** Strategy settings were chosen on 2024–2025 and 2026 was run once. That's why the 2026 result can be trusted, and why the one surprise (season averages edging the model in 2026) is reported rather than tuned away.
+- **On noisy tabular data a linear model is a serious baseline.** A plain neural network lost to ridge regression; Wide & Deep matched it, and averaging the two was best.
+- **The market is efficient pre-season.** Before round 1, the model and Supercoach's own prices rank players equally well against final averages (r = 0.63 each). The edge comes in-season, once real form data arrives.
 
 ## Run it
 
 ```bash
 pip install -r requirements.txt
 
-python season_review.py     # the final run: tests, simulation, all charts, retrains the model
+python season_review.py     # the final run: benchmarks, 2024-26 season replays, all charts, retrains the model
 python main.py --round 10   # replay any round: predictions + optimal squad (+ --plan for byes)
 python trade_advisor.py --round 9 --no-scrape   # trade advice for the squad in data/inputs/round_9.yaml
-python -m pytest -q         # 45 tests, no TensorFlow needed
+python -m pytest -q         # 50 tests, no TensorFlow needed
 ```
 
 ## Repository layout
 
 ```
 ├── scraper.py          # jqGrid JSON API → data/raw/nrl_data_<year>.csv
-├── model.py            # leak-free features, Wide & Deep network, holdout evaluation
+├── model.py            # leak-free features, Wide & Deep + ridge ensemble, holdout evaluation
+├── player_outlook.py   # availability and price-change models
 ├── optimizer.py        # PuLP/CBC squad integer program
-├── trade_advisor.py    # weekly trade recommendations + trade map
-├── planner.py          # 27-round bye / trade-scheduling simulation
-├── season_sim.py       # replays a season under Supercoach rules
+├── season_sim.py       # replays a season under Supercoach rules (original + improved strategy)
 ├── season_review.py    # end-of-season evaluation (the final run)
+├── trade_advisor.py    # weekly trade recommendations used live in 2026
+├── planner.py          # 27-round bye / trade-scheduling simulation
 ├── visualise.py        # every chart, one consistent style
 ├── main.py             # weekly pipeline CLI
 ├── data/
 │   ├── raw/            # one CSV per season (2022–2026) + 2026 fixtures
-│   └── inputs/         # weekly squad/starter YAML, injury list
-├── models/             # next_game_model.keras + model_card.json
+│   └── inputs/         # weekly squad/starter YAML, injury list, real-coach benchmarks
+├── models/             # next_game_model.keras + model_card.json (incl. ridge weights)
 ├── outputs/
 │   ├── season_review/  # simulation logs, predictions, benchmarks, summary.json
 │   └── live_2026/      # what the system produced live during the 2026 season
 ├── docs/images/        # figures in this README
-└── tests/              # 45 pytest tests (leakage, simulator, optimizer, trades, quotas)
+└── tests/              # 50 pytest tests (leakage, simulator, availability, optimizer, trades)
 ```
 
 During the season, a scheduled GitHub Actions workflow ran the pipeline every Wednesday and published the squad and trade advice. It has been retired now the season is over, and CI runs the test suite on every push instead.

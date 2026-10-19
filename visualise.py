@@ -43,7 +43,7 @@ def apply_style():
     plt.rcParams.update({
         "figure.facecolor": SURFACE, "axes.facecolor": SURFACE,
         "savefig.facecolor": SURFACE,
-        "font.family": ["Segoe UI", "Helvetica Neue", "Arial", "DejaVu Sans"],
+        "font.family": ["Segoe UI", "Arial", "DejaVu Sans"],
         "font.size": 10.5, "text.color": INK,
         "axes.edgecolor": BASELINE, "axes.linewidth": 1.0,
         "axes.labelcolor": INK_2, "axes.labelsize": 10.5,
@@ -196,8 +196,8 @@ def plot_model_benchmark(metrics: dict, n_games: int, season: int, path: Path,
     best = metrics[nn_label]["mae"]
     _titles(fig, f"Predicting every {season} game before it was played",
             f"Trained on 2022–{season - 1} only, tested on all {n_games:,} games of {season}. "
-            f"The network cuts error {100 * (base - best) / base:.0f}% vs. the season-average "
-            "heuristic, level with a tuned linear model.")
+            f"{nn_label}: the lowest error of any method, {100 * (base - best) / base:.0f}% below "
+            "the season-average heuristic.")
     _footnote(fig, "Hindsight oracle = each player's true 2026 average over the predicted "
                    "games; unattainable, it shows how much of the error is game-day noise.")
     _save(fig, path)
@@ -433,7 +433,7 @@ def _primary(positions: pd.Series) -> pd.Series:
 
 
 def plot_season_simulation(results: dict, highlight: str, path: Path, season: int,
-                           big_byes=(12, 15, 18)):
+                           compare: str, big_byes=(12, 15, 18)):
     """Round scores of the simulated team (left) and running totals (right)."""
     apply_style()
     main = results[highlight]
@@ -481,11 +481,10 @@ def plot_season_simulation(results: dict, highlight: str, path: Path, season: in
     ax2.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v / 1000:.0f}k"))
 
     total = main["points"].sum()
-    others = [t for t, n in ends if n != highlight]
+    gain = total - results[compare]["points"].sum()
     _titles(fig, f"The full {season} season under Supercoach rules: {total:,.0f} points",
-            f"Pre-season squad, then the model's trades every round (46 + 5 boosts), with real "
-            f"prices, team lists and byes; captain doubled. {total - max(others):+,.0f} vs. the "
-            "same rules driven by season averages.")
+            f"Pre-season squad, then trades every round (46 + 5 boosts), with real prices, team "
+            f"lists and byes; captain doubled. {gain:+,.0f} vs. the original trading strategy.")
     _footnote(fig, "Every decision uses only what was known before that round; points are the "
                    f"real {season} scores. Scoring 18 = 13 starters + 4 bench + 1 flex.")
     _save(fig, path)
@@ -705,4 +704,38 @@ def plot_human_comparison(simulated: dict, humans: dict, highlight: str, path: P
             f"{top10 - total:,.0f} short of the top-10% average.")
     _footnote(fig, "Real-coach figures from the SuperCoach app's season scoring trends. "
                    "Simulated teams follow the same squad, trade and captain rules.")
+    _save(fig, path)
+
+
+def plot_strategy_improvement(by_season: dict, original: str, improved: str,
+                              test_season: int, path: Path):
+    """Original vs improved trading strategy, per season (dev seasons + test)."""
+    apply_style()
+    seasons = sorted(by_season)
+    x = np.arange(len(seasons))
+    w = 0.34
+    fig, ax = plt.subplots(figsize=(10, 5.4))
+    fig.subplots_adjust(left=0.09, right=0.97, top=0.78, bottom=0.14)
+    for off, (label, colour) in zip((-w / 2, w / 2), [(original, ORANGE), (improved, BLUE)]):
+        vals = [by_season[y][label] for y in seasons]
+        ax.bar(x + off, vals, width=w * 0.92, color=colour, label=label)
+        for xx, v in zip(x + off, vals):
+            ax.text(xx, v + 250, f"{v:,.0f}", ha="center", fontsize=9, color=INK_2)
+    top = max(max(d.values()) for d in by_season.values())
+    for xx, y in zip(x, seasons):
+        gain = by_season[y][improved] - by_season[y][original]
+        ax.text(xx, top * 1.07, f"{gain:+,.0f}", ha="center", fontsize=10.5,
+                fontweight="semibold", color=INK)
+    ax.set_xticks(x, [f"{y}\n{'test season' if y == test_season else 'development'}"
+                      for y in seasons])
+    ax.set_ylim(0, top * 1.14)
+    ax.set_ylabel("Season points")
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v / 1000:.0f}k"))
+    ax.grid(axis="x", visible=False)
+    ax.legend(loc="upper left", ncols=2, bbox_to_anchor=(0, 1.1))
+    wins = all(by_season[y][improved] > by_season[y][original] for y in seasons)
+    _titles(fig, "The improved strategy wins in every season" if wins
+            else "Improved vs. original strategy, season by season",
+            "Designed and tuned on 2024 and 2025 (models trained on earlier years), then run "
+            f"once on {test_season}, which was never used to choose anything.")
     _save(fig, path)
