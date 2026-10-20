@@ -1,8 +1,8 @@
 ,mae,rmse,r2,rank_corr,params,epochs,mae_seed_range
 Season average (heuristic),17.879,23.985,0.109,0.44,0.0,,
-Ridge regression,16.663,22.36,0.226,0.488,50.0,,
-"Plain MLP, no wide path",16.787,22.438,0.22,0.482,5313.0,54.0,
-Wide & Deep (production),16.745,22.428,0.221,0.482,5363,71,"[16.713, 16.752]"
-Wide & Deep + ridge average,16.652,22.337,0.227,0.488,5413.0,,
-"Wide & Deep, 3 layers (128-64-32)",16.905,22.535,0.213,0.475,16819.0,44.0,
-"Wide & Deep, Huber loss",16.659,22.613,0.208,0.483,5363.0,96.0,
+Ridge regression,16.52,22.179,0.238,0.502,52.0,,
+"Plain MLP, no wide path",16.589,22.197,0.237,0.498,5441.0,45.0,
+Wide & Deep (production),16.591,22.223,0.235,0.496,5493,45,"[16.557, 16.591]"
+Wide & Deep + ridge average,16.519,22.159,0.24,0.501,5545.0,,
+"Wide & Deep, 3 layers (128-64-32)",16.613,22.249,0.233,0.494,17077.0,36.0,
+"Wide & Deep, Huber loss",16.47,22.371,0.225,0.5,5493.0,44.0,

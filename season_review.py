@@ -2,7 +2,9 @@
 season_review.py — the end-of-season retrospective (the project's final run).
 
   1. Predictor test: train on 2022-2025 only, predict every game of 2026,
-     and compare with the heuristics fantasy coaches use.
+     and compare with the heuristics fantasy coaches use. Also the price
+     rule: how exactly it reproduces every season's price moves, and its
+     3-game forecast from the predicted scores against the old trees.
   2. Predictor comparison: every round, pick a fresh 26-man squad under the
      cap with each way of valuing players and score its best 18 on real
      results. Not how the game is played; it isolates the predictor.
@@ -33,11 +35,12 @@ import yaml
 import visualise as viz
 from main import load_data
 from model import (MODEL_LABEL, ORACLE_LABEL, TARGET, build_training_pairs,
-                   evaluate_holdout, fit_price_baseline, primary_position,
-                   train_predictor, train_production_model)
+                   evaluate_holdout, fit_price_baseline, fit_rookie_baseline,
+                   primary_position, train_predictor, train_production_model)
 from optimizer import POINTS_ONLY, SALARY_CAP, select_team
 from paths import DATA_INPUTS, OUTPUTS_DIR, PROJECT_ROOT
-from player_outlook import evaluate_outlook, train_outlook
+from player_outlook import (evaluate_outlook, evaluate_price_rule, rule_reproduction,
+                            train_outlook)
 from season_sim import IMPROVED, ORIGINAL, best_lineup, prepare_season, simulate_season
 
 log = logging.getLogger(__name__)
@@ -62,6 +65,10 @@ SIMULATIONS = [                      # (label, strategy, trading?)
     (AVERAGES_LABEL, replace(IMPROVED, value="season_avg"), True),
     (NO_TRADES_LABEL, IMPROVED, False),
 ]
+
+
+def _rounded(d: dict) -> dict:
+    return {k: _rounded(v) if isinstance(v, dict) else round(v, 4) for k, v in d.items()}
 
 
 def squad_table(result: dict) -> pd.DataFrame:
@@ -124,7 +131,12 @@ def run_review(year: int, scrape: bool = False) -> dict:
 
     # 1. Predictor test: train < year, predict every game of `year`.
     metrics, test, predictor = evaluate_holdout(pairs, year)
-    outlook_metrics = evaluate_outlook(rounds, totals, year)
+    next_score = test[["player_name", "year", "round"]].assign(
+        predicted=test[f"pred_{MODEL_LABEL}"])
+    outlook_metrics = evaluate_outlook(rounds, totals, year, next_score)
+    price_rule = evaluate_price_rule(rounds, totals, sorted(totals))
+    viz.plot_price_rule(rule_reproduction(rounds, totals, year), outlook_metrics, year,
+                        IMAGES_DIR / "price_rule.png")
     pd.DataFrame(metrics).T.round(4).to_csv(REVIEW_DIR / "model_benchmark.csv")
     keep = ["player_name", "team", "positions", "next_round", "opp", TARGET,
             *[c for c in test.columns if c.startswith("pred_")]]
@@ -198,7 +210,7 @@ def run_review(year: int, scrape: bool = False) -> dict:
                                          ("Last season's average", "season_avg_value")]}
 
     # 5. Production model for next season, trained on every season.
-    train_production_model(pairs, metrics, year)
+    train_production_model(pairs, metrics, year, rookie_fit=fit_rookie_baseline(rounds))
 
     model_weekly = weekly[MODEL_LABEL]
     rr = best.rounds
@@ -208,7 +220,8 @@ def run_review(year: int, scrape: bool = False) -> dict:
         "games_tested": int(len(test)),
         "model_benchmark": {k: {m: round(v, 4) for m, v in d.items()}
                             for k, d in metrics.items()},
-        "availability_and_price_models": {k: round(v, 4) for k, v in outlook_metrics.items()},
+        "availability_and_price_models": _rounded(outlook_metrics),
+        "price_rule_by_season": {str(y): _rounded(m) for y, m in price_rule.items()},
         "predictor_comparison": {
             "season_points": {k: round(float(v)) for k, v in weekly.sum().items()},
             "rounds_won_by_model": {k: int((model_weekly > weekly[k]).sum())

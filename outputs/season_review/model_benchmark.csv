@@ -1,7 +1,7 @@
 ,mae,rmse,r2,rank_corr
-NN + ridge ensemble,16.9715,22.6432,0.2388,0.5123
-Wide & Deep NN,17.0117,22.693,0.2355,0.5088
-Ridge regression,16.985,22.6517,0.2382,0.5124
+NN + ridge ensemble,16.7595,22.3728,0.2569,0.5298
+Wide & Deep NN,16.7946,22.4183,0.2539,0.5262
+Ridge regression,16.7869,22.3972,0.2553,0.5301
 Season average,18.079,23.9614,0.1476,0.4772
 Last-3 average,19.0057,25.1656,0.0598,0.4526
 Price-implied,17.5043,23.2102,0.2002,0.48

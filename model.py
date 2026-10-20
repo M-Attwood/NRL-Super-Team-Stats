@@ -9,7 +9,10 @@ score, minutes and stat line. The model learns
 where "state" only uses games 1..k (season-to-date averages, recent form,
 minutes, scoring-component averages, price, last season's average, and the
 upcoming opponent's points conceded to that position so far). Nothing from
-game k+1 or later leaks into the features.
+game k+1 or later leaks into the features, with one deliberate exception:
+the team list for game k+1, published before it is played. Whether the
+player is named to start (jersey 1-13) or on the interchange (14-17) is
+an input. This assumes the final team list, as the coach had it.
 
 Evaluation is out-of-time: train on 2022-2025, test on every 2026 game, and
 compare against the heuristics fantasy coaches actually use (season average,
@@ -65,6 +68,8 @@ FEATURES = [
     # opportunity
     "mins_avg", "mins_last3", "mins_last1", "ppm",
     "last_started", "last_benched", "start_share",
+    # this game's team list, published before it is played
+    "named_start", "named_bench",
     # how the points are scored
     *ROLLING_STATS.values(),
     # market signals
@@ -131,6 +136,53 @@ def position_one_hots(positions: pd.Series) -> pd.DataFrame:
 
 
 # ── Feature engineering ───────────────────────────────────────────────────────
+
+def named_role(jersey: pd.Series) -> pd.DataFrame:
+    """Team-list role from a jersey number: 1-13 named to start, 14-17 on
+    the interchange. Reserves called up late (18+) and unknown get neither."""
+    jersey = pd.to_numeric(jersey, errors="coerce")
+    return pd.DataFrame({"named_start": (jersey <= 13).astype(float),
+                         "named_bench": jersey.between(14, 17).astype(float)},
+                        index=jersey.index)
+
+
+# The three team-list roles and their (named_start, named_bench) inputs.
+ROLES = {"start": (1.0, 0.0), "interchange": (0.0, 1.0), "other": (0.0, 0.0)}
+
+
+def role_index(roles: pd.DataFrame) -> np.ndarray:
+    """0 = named to start, 1 = interchange, 2 = neither, per row of a
+    (named_start, named_bench) frame."""
+    return np.where(roles["named_start"] > 0.5, 0, np.where(roles["named_bench"] > 0.5, 1, 2))
+
+
+def role_transitions(rounds: pd.DataFrame, ahead: int) -> np.ndarray:
+    """P(team-list role j games later | role now) for j = 1..ahead, as an
+    (ahead, 3, 3) array over ROLES. Used to predict games whose team list
+    isn't out yet: a starter is still named to start 93% of the time a game
+    later, an interchange player stays there about 70% of the time."""
+    r = rounds.sort_values(["player_name", "year", "round"])
+    role = pd.Series(role_index(named_role(r["jersey_number"])), index=r.index)
+    by = role.groupby([r["player_name"], r["year"]])
+    out = np.zeros((ahead, 3, 3))
+    for j in range(1, ahead + 1):
+        later = by.shift(-j)
+        ok = later.notna()
+        counts = pd.crosstab(role[ok], later[ok].astype(int)).reindex(
+            index=range(3), columns=range(3), fill_value=0).to_numpy(float)
+        out[j - 1] = counts / counts.sum(axis=1, keepdims=True).clip(min=1)
+    return out
+
+
+def predict_over_roles(predictor, frame: pd.DataFrame, probs: np.ndarray) -> np.ndarray:
+    """Expected prediction when the team-list role is uncertain: the
+    prediction in each role weighted by its probability (rows x ROLES)."""
+    out = np.zeros(len(frame))
+    for k, (start, bench) in enumerate(ROLES.values()):
+        out += probs[:, k] * predictor.predict(frame.assign(named_start=start,
+                                                            named_bench=bench))
+    return out
+
 
 def player_state(rounds: pd.DataFrame) -> pd.DataFrame:
     """For every player-round row, the player's state *after* that game,
@@ -277,6 +329,8 @@ def build_training_pairs(rounds: pd.DataFrame, totals: dict) -> pd.DataFrame:
     state[TARGET] = g["score"].shift(-1)
     state["next_round"] = g["round"].shift(-1)
     state["opp"] = g["vs_team"].shift(-1)
+    # Game k+1's team list: only its jersey number, nothing it produced.
+    state[["named_start", "named_bench"]] = named_role(g["jersey_number"].shift(-1))
     pairs = state.dropna(subset=[TARGET]).copy()
     pairs["rounds_since_last"] = pairs["next_round"] - pairs["round"]
     pairs["opp_factor"] = opponent_factor(rounds, pairs)
@@ -297,7 +351,8 @@ STATE_FEATURES = ["season_avg", "last1", "last3_avg", "last5_avg", "season_std",
 def build_prediction_frame(rounds: pd.DataFrame, totals: dict, year: int,
                            next_round: int,
                            fixtures: pd.DataFrame | None = None,
-                           price_col: str = "price") -> pd.DataFrame:
+                           price_col: str = "price",
+                           team_list: pd.Series | None = None) -> pd.DataFrame:
     """One row per rostered player in `year`, ready to predict round `next_round`.
 
     Each player's state comes from their latest game before `next_round`
@@ -306,6 +361,10 @@ def build_prediction_frame(rounds: pd.DataFrame, totals: dict, year: int,
     Only games before `next_round` are used, so any round of a finished
     season can be replayed exactly as it looked at the time. Pass
     price_col="start_price" to replay the pre-season market.
+
+    `team_list` (jersey number by player_name) is the round's published team
+    list. Players on it get its role; anyone else, or everyone when it isn't
+    out yet, gets the role from their latest game as the best guess.
     """
     from scraper import get_next_opponent
 
@@ -335,6 +394,13 @@ def build_prediction_frame(rounds: pd.DataFrame, totals: dict, year: int,
     frame["team_factor"] = team_factor(this_season, context)
 
     frame = add_prev_season(frame, _prev_season_lookup(totals))
+    frame[["named_start", "named_bench"]] = frame[["last_started", "last_benched"]].to_numpy()
+    if team_list is not None:
+        listed = frame["player_name"].isin(team_list.index).to_numpy()
+        role = named_role(frame["player_name"].map(team_list))
+        frame.loc[listed, ["named_start", "named_bench"]] = role[listed].to_numpy()
+    frame["named_listed"] = (frame["player_name"].isin(team_list.index)
+                             if team_list is not None else False)
     frame = _finalise(frame)
     frame["price_usd"] = frame["price"]   # dollar price used by optimizer / planner
     return frame
@@ -347,6 +413,35 @@ def fit_price_baseline(pairs: pd.DataFrame) -> tuple[float, float]:
     from expected average, so this is the market's own forecast."""
     slope, intercept = np.polyfit(pairs["price"], pairs[TARGET], 1)
     return float(slope), float(intercept)
+
+
+ROOKIE_TERMS = ["intercept", "price", "named_start", "named_bench"]
+
+
+def fit_rookie_baseline(rounds: pd.DataFrame) -> dict | None:
+    """Score in a rookie's first game (no games last season) from his price
+    and team-list role, by least squares over every season in `rounds` that
+    has the season before it. The network has no history to work from for
+    these players; a rookie named to start scores far more than one on the
+    interchange at the same price."""
+    r = rounds.sort_values(["player_name", "year", "round"])
+    first = r.drop_duplicates(["player_name", "year"])
+    seasons = set(r["year"])
+    played_before = set(zip(r["player_name"], r["year"] + 1))
+    rookie = first[[(p, y) not in played_before and y - 1 in seasons
+                    for p, y in zip(first["player_name"], first["year"])]]
+    if len(rookie) < 30:
+        return None                    # no earlier season to tell rookies apart
+    role = named_role(rookie["jersey_number"])
+    X = np.column_stack([np.ones(len(rookie)), rookie["price"], role])
+    coef, *_ = np.linalg.lstsq(X, rookie["score"].to_numpy(float), rcond=None)
+    return dict(zip(ROOKIE_TERMS, map(float, coef)))
+
+
+def rookie_estimate(frame: pd.DataFrame, rookie_fit: dict) -> np.ndarray:
+    return (rookie_fit["intercept"] + rookie_fit["price"] * frame["price"]
+            + rookie_fit["named_start"] * frame["named_start"]
+            + rookie_fit["named_bench"] * frame["named_bench"]).to_numpy()
 
 
 def baseline_predictions(df: pd.DataFrame, price_fit: tuple[float, float]) -> dict:
@@ -554,7 +649,7 @@ def load_model_card() -> dict:
 
 
 def train_production_model(pairs: pd.DataFrame, holdout_metrics: dict | None,
-                           test_year: int | None):
+                           test_year: int | None, rookie_fit: dict | None = None):
     """Train on every season and save alongside a model card."""
     predictor = train_predictor(pairs)
     card = {
@@ -564,6 +659,7 @@ def train_production_model(pairs: pd.DataFrame, holdout_metrics: dict | None,
         "train_seasons": sorted(int(y) for y in pairs["year"].unique()),
         "train_games": int(len(pairs)),
         "price_baseline": fit_price_baseline(pairs),
+        "rookie_baseline": rookie_fit,
         "holdout_season": test_year,
         "holdout_metrics": holdout_metrics,
     }
@@ -574,19 +670,25 @@ def train_production_model(pairs: pd.DataFrame, holdout_metrics: dict | None,
 # ── Prediction ────────────────────────────────────────────────────────────────
 
 def predict_next_round(frame: pd.DataFrame, model: Predictor | None = None,
-                       price_fit: tuple[float, float] | None = None) -> pd.DataFrame:
+                       price_fit: tuple[float, float] | None = None,
+                       rookie_fit: dict | None = None) -> pd.DataFrame:
     """Add `predicted_points` to a frame from build_prediction_frame.
-    Rookies (no games in this or last season) use the price-implied
-    estimate — the models have never seen a zero-game history."""
+    Rookies (no games in this or last season) have no history for the
+    models: those on the round's team list get the rookie estimate from
+    price and named role (fit_rookie_baseline), the rest the price-implied
+    estimate."""
+    card = {} if model and price_fit else load_model_card()
     model = model or load_model()
     frame = frame.copy()
-    slope, intercept = price_fit or load_model_card().get("price_baseline",
-                                                          (1 / 10_000, 0.0))
+    slope, intercept = price_fit or card.get("price_baseline", (1 / 10_000, 0.0))
+    rookie_fit = rookie_fit or card.get("rookie_baseline")
     preds = model.predict(frame)
-    price_implied = frame["price"] * slope + intercept
-    frame["predicted_points"] = np.where(frame["is_rookie"], price_implied, preds)
+    rookie = (frame["price"] * slope + intercept).to_numpy()
+    if rookie_fit and "named_listed" in frame:
+        rookie = np.where(frame["named_listed"], rookie_estimate(frame, rookie_fit), rookie)
+    frame["predicted_points"] = np.where(frame["is_rookie"], rookie, preds)
     frame["predicted_points"] = frame["predicted_points"].clip(lower=0)
-    log.info("Predicted %d players (%d rookies on price-implied): mean %.1f, max %.1f",
+    log.info("Predicted %d players (%d rookies on the rookie estimate): mean %.1f, max %.1f",
              len(frame), int(frame["is_rookie"].sum()),
              frame["predicted_points"].mean(), frame["predicted_points"].max())
     return frame

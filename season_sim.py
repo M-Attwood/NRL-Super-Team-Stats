@@ -5,7 +5,11 @@ This is the game the system was built to play: pick a squad before round 1,
 then trade every week. The replay only uses what was known at the time.
 
   Pre-season   26 players at start-of-season prices under the $11.95M cap.
-  Each round   - Prices move exactly as they did that season.
+  Each round   - Prices move exactly as they did that season. Trades are made
+                 at the price going into the round (a scraped row's price is
+                 the price after that round's game).
+               - The round's team lists are known (jersey 1-13 named to
+                 start, 14-17 interchange), as they are to a real coach.
                - Trades: 2 per round (4 in the big bye rounds, read from that
                  season's draw), 46 for the season. 5 boosts allow one extra
                  trade in a round; it still comes out of the 46. A trade must
@@ -27,9 +31,17 @@ How trades are chosen is set by a Strategy:
              per-round predictions against each upcoming opponent; the
              availability model for who will be named, State of Origin
              weeks included; cash value of the bank and of expected price
-             rises; keeps 1.25 trades in hand per round still to play, so
-             it never runs dry before the last round; no buying back a
-             player just sold.
+             rises, projected with the game's own price rule from the
+             predicted scores; keeps 1.25 trades in hand per round still to
+             play, so it never runs dry before the last round; no buying
+             back a player just sold.
+  Cash-cow planner (cow_price, off): a cheap player is valued by the plan
+             buy now, hold, sell when his projected price rise is worth
+             most, with the cash then funding upgrades for the rounds left.
+             Tested on 2024-25 (and 2023 as a check) and switched off: its
+             effect changed sign from season to season and setting to
+             setting. Trades, not cash, are what run out, and projections
+             built on expected scores undersell the breakout rookies.
 
 Strategy parameters are tuned on a development season only (see
 season_review.py), never on the season being reported.
@@ -42,13 +54,15 @@ import numpy as np
 import pandas as pd
 import pulp
 
-from model import (build_prediction_frame, opponent_factor, player_state,
-                   predict_next_round)
+from model import (build_prediction_frame, fit_rookie_baseline, opponent_factor,
+                   player_state, predict_next_round, predict_over_roles, role_index,
+                   role_transitions)
 from optimizer import ACTIVE_QUOTAS, SALARY_CAP, _eligible_positions, select_team
 from planner import (BASE_TRADES_BIG_BYE, TOTAL_TRADES, TRADE_BOOSTS,
                      get_effective_trade_limit, validate_position_quotas)
-from player_outlook import (add_origin, attach_history, origin_misses, origin_weeks,
-                            predict_availability, predict_price_change, team_rounds)
+from player_outlook import (PRICE_HORIZON, add_origin, attach_history, origin_misses,
+                            origin_weeks, predict_availability, predict_price_change,
+                            price_floor, project_prices, rule_before, team_rounds)
 from scraper import load_fixtures
 
 log = logging.getLogger(__name__)
@@ -70,15 +84,16 @@ class Strategy:
     lineup_aware: bool = True      # value the squad's best 18, not players one-for-one
     availability: bool = True      # use the availability model for future rounds
     cash_weight: float = 0.5       # share of cash assumed turned into points later
+    price_model: str = "rule"      # expected price change: the game's "rule" or the "trees"
     trade_bar: float = 20.0        # points a trade must add to be worth making
     reserve: float = 1.25          # trades kept in hand per round still to play
     save_for_byes: bool = False    # also keep each later big bye round's full allowance
     bye_exempt: bool = False       # a big bye round may use its full allowance regardless
     plan_byes: bool = False        # big bye rounds count in full, not discounted
-    cow_price: float = 0.0         # cash cows: players up to this price who have played this
-    cow_weight: float = 1.0        # season are valued by their whole expected rise (0 = off)
-    cow_trades: bool = False       # also trade players outside the scoring 18 for cash cows,
-    cow_cash_weight: float = 1.0   # counting this share of a cow's rise as future points
+    cow_price: float = 0.0         # cash-cow planner for players up to this price (0 = off)
+    cow_cash_weight: float = 1.0   # share of a planned rise turned into points after the sale
+    cow_preseason: bool = True     # plan cows in the pre-season pick too
+    cow_buys: bool = True          # ... and buy new cows during the season
     cooldown: int = 3              # rounds before a sold player can be bought back
     candidates: int = 40           # trades scored in full per decision
 
@@ -96,6 +111,9 @@ class RoundData:
     frame: pd.DataFrame          # indexed by player_name
     preds: pd.DataFrame          # player x round: model prediction for upcoming rounds
     teams_playing: set[str]
+    # Expected price going into each later round (and after the last), from
+    # the price rule with the "model" predictions or the "season_avg" heuristic.
+    paths: dict[str, pd.DataFrame] = field(default_factory=dict)
 
 
 @dataclass
@@ -104,7 +122,6 @@ class SeasonInputs:
     rounds: dict[int, RoundData]
     points_per_dollar: float     # what $1 buys in points per game (price slope)
     origin_week: dict[int, int] = field(default_factory=dict)   # round -> 0/1/2
-    price_intercept: float = 0.0  # points at $0 in the price fit (price-implied score)
 
     @property
     def bye_trades(self) -> dict[int, int]:
@@ -128,14 +145,17 @@ def fixtures_for(rounds: pd.DataFrame, year: int) -> pd.DataFrame:
 
 
 def price_table(rounds: pd.DataFrame, totals: dict, year: int, last_round: int) -> pd.DataFrame:
-    """Player x round price as it stood during each round. Prices only move
-    after games played, so gaps are forward-filled from the start price."""
+    """Player x round: the price going into each round, the one trades are
+    made at. A row's price is the price after that round's game, and prices
+    only move after games played, so the price going into round r is the
+    latest from a game before r, or the start price."""
     season = rounds[rounds["year"] == year]
-    px = season.pivot_table(index="player_name", columns="round", values="price", aggfunc="last")
+    after = season.pivot_table(index="player_name", columns="round", values="price",
+                               aggfunc="last")
     start = totals[year].set_index("player_name")["start_price"]
-    px = px.reindex(index=start.index, columns=range(1, last_round + 1))
-    px.insert(0, 0, start)
-    return px.ffill(axis=1).drop(columns=0)
+    after = after.reindex(index=start.index, columns=range(1, last_round + 1))
+    after.insert(0, 0, start)
+    return after.ffill(axis=1).shift(1, axis=1).drop(columns=0)
 
 
 def _opponents(fixtures: pd.DataFrame, rnd: int) -> dict[str, str]:
@@ -179,13 +199,17 @@ def prepare_season(rounds: pd.DataFrame, totals: dict, year: int, predictor,
     """Everything the replay needs for each round of `year`, using only
     games before that round: per-round predictions against each upcoming
     opponent, availability, expected price change, real prices and results."""
-    avail_clf, price_model, debut_rate = outlook
+    avail_clf, price_model, debut_rate, price_rules = outlook
+    rookie_fit = fit_rookie_baseline(rounds[rounds["year"] < year])
+    transitions = role_transitions(rounds[rounds["year"] < year], LOOKAHEAD - 1)
+    floor = price_floor(totals[year])
     fixtures = fixtures_for(rounds, year)
     season = rounds[rounds["year"] == year]
     last_round = int(season["round"].max())
     prices = price_table(rounds, totals, year, last_round)
     team_games = team_rounds(rounds[rounds["year"] <= year])
     weeks = origin_weeks(team_games)          # from the draw, known pre-season
+    week_of = {r: int(weeks.get((year, r), 0)) for r in range(1, last_round + 1)}
     misses = origin_misses(rounds[rounds["year"] <= year], team_games, weeks)
     playing = {r: set(fixtures.loc[fixtures["round"] == r, "home_team"])
                | set(fixtures.loc[fixtures["round"] == r, "away_team"])
@@ -193,21 +217,27 @@ def prepare_season(rounds: pd.DataFrame, totals: dict, year: int, predictor,
     out = {}
     for rnd in range(1, last_round + 1):
         played = season[season["round"] == rnd].set_index("player_name")
-        frame = build_prediction_frame(rounds, totals, year, rnd, fixtures)
+        frame = build_prediction_frame(rounds, totals, year, rnd, fixtures,
+                                       team_list=played["jersey_number"])
         frame["price"] = frame["player_name"].map(prices[rnd]).astype(float)
         frame["price_usd"] = frame["price"]
         frame = frame[frame["price"] > 0].reset_index(drop=True)
-        frame = predict_next_round(frame, predictor, price_fit=price_fit)
+        frame = predict_next_round(frame, predictor, price_fit=price_fit,
+                                   rookie_fit=rookie_fit)
 
         # Predictions for each of the next LOOKAHEAD rounds, against that
         # round's opponent (opponent strength measured before this round).
+        # Their team lists aren't out: average over the roles the player
+        # could be named in, from his role now (this round's list, or his
+        # last game) and how often players keep a role.
         preds = {rnd: frame["predicted_points"].to_numpy()}
+        role_now = role_index(frame)
         for h in range(rnd + 1, min(rnd + LOOKAHEAD, last_round + 1)):
             opp = frame["team"].map(_opponents(fixtures, h))
             ctx = frame.assign(opp=opp, next_round=rnd, year=year)
             future = frame.assign(opp=opp, next_round=h,
                                   opp_factor=opponent_factor(season, ctx).to_numpy())
-            p = predictor.predict(future)
+            p = predict_over_roles(predictor, future, transitions[h - rnd - 1][role_now])
             preds[h] = np.where(frame["is_rookie"], frame["predicted_points"], p).clip(min=0)
         frame = frame.set_index("player_name")
         frame["named"] = frame.index.isin(played.index)
@@ -218,17 +248,50 @@ def prepare_season(rounds: pd.DataFrame, totals: dict, year: int, predictor,
         avail = _availability(frame, rounds, year, rnd, avail_clf, team_games,
                               debut_rate, weeks, misses)
         frame[avail.columns] = avail
-        # Within-season price model; prices don't move before round 2.
+        # The trees' 3-game price change (kept for comparison with the rule).
         frame["price_change_3"] = predict_price_change(price_model, frame) if rnd > 1 else 0.0
         keep = ["team", "positions", "price", "price_usd", "named", "score", "team_plays",
                 "predicted_points", "season_avg_value", "is_rookie",
                 *AVAIL_BY_WEEK.values(), "price_change_3"]
-        out[rnd] = RoundData(frame[keep], pd.DataFrame(preds, index=frame.index),
-                             playing[rnd])
+        preds = pd.DataFrame(preds, index=frame.index)
+        rule = rule_before(price_rules, year, rnd, floor)
+        paths = {value: _price_path(frame, scores, rule, season, rnd, last_round, playing,
+                                    week_of)
+                 for value, scores in [("model", preds),
+                                       ("season_avg", frame[["season_avg_value"]])]}
+        out[rnd] = RoundData(frame[keep], preds, playing[rnd], paths)
         log.info("Prepared %d round %d: %d players, %d named", year, rnd, len(frame),
                  int(frame["named"].sum()))
-    return SeasonInputs(year, out, points_per_dollar=price_fit[0], price_intercept=price_fit[1],
+    return SeasonInputs(year, out, points_per_dollar=price_fit[0],
                         origin_week={r: int(weeks.get((year, r), 0)) for r in out})
+
+
+def _price_path(frame: pd.DataFrame, scores: pd.DataFrame, rule, season: pd.DataFrame,
+                rnd: int, last_round: int, playing: dict, week_of: dict) -> pd.DataFrame:
+    """Expected price going into rounds rnd..last_round + 1 under the game's
+    price rule. Scores per coming round come from `scores` (one column per
+    round, or a single column for every round). A player plays this round if
+    named, and later rounds with his team's chance of being named for that
+    kind of week; his last two real scores this season start the rolling
+    window."""
+    rounds_ahead = list(range(rnd, last_round + 1))
+    if rule is None:
+        return pd.DataFrame({h: frame["price"] for h in rounds_ahead + [last_round + 1]})
+    fill = scores.mean(axis=1)
+    s = np.column_stack([(scores[h] if h in scores else fill).clip(lower=0)
+                         for h in rounds_ahead])
+    plays = np.column_stack([
+        frame["named"].astype(float) if h == rnd else
+        frame["team"].isin(playing[h]) * frame[AVAIL_BY_WEEK[week_of.get(h, 0)]]
+        for h in rounds_ahead])
+    before = season[season["round"] < rnd].sort_values(["player_name", "round"])
+    g = before.groupby("player_name")["score"]
+    games, last1 = g.size(), g.last()
+    last2 = before.assign(prev=g.shift(1)).groupby("player_name")["prev"].last()
+    path = project_prices(rule, frame["price"], last2.reindex(frame.index).fillna(0),
+                          last1.reindex(frame.index).fillna(0),
+                          games.reindex(frame.index).fillna(0), s, plays)
+    return pd.DataFrame(path, index=frame.index, columns=rounds_ahead + [last_round + 1])
 
 
 # ── Lineups ───────────────────────────────────────────────────────────────────
@@ -295,12 +358,13 @@ class Outlook:
     weights: np.ndarray          # discount per round
     cash_rate: float             # points per $ of cash, over the rest of the season
     counted: list[int]           # scores that count in each round (18, or 13 in a bye)
-    rise: pd.Series | None = None  # expected price rise per player ($)
-    cows: pd.Index | None = None   # cash cows available this round
-    cow_rate: float = 0.0          # points per $ of a cow's expected rise
+    rise_value: pd.Series | None = None   # points each player's expected price change is worth
+    cows: pd.Index | None = None          # players valued by the cash-cow plan
 
 
-def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy) -> Outlook:
+def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy, cows=()) -> Outlook:
+    """`cows`: cash cows already owned; they keep the planner's valuation
+    after their price has risen past strat.cow_price."""
     data = inputs.rounds
     last = max(data)
     rounds_ahead = list(range(rnd, min(rnd + strat.horizon, last + 1)))
@@ -327,33 +391,46 @@ def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy) -> Outlook:
         weights = np.where([h in inputs.bye_trades for h in rounds_ahead], 1.0, weights)
     later = strat.discount ** np.arange(1, last - rnd + 1)
     cash_rate = strat.cash_weight * inputs.points_per_dollar * float(later.sum())
-    rise, cows = cash_cows(inputs, rnd, strat)
-    cow_rate = strat.cow_cash_weight * inputs.points_per_dollar * float(later.sum())
+    rise, planned = rise_values(inputs, rnd, strat, cash_rate, cows)
     return Outlook(pd.DataFrame(expected), weights, cash_rate,
-                   [inputs.counted(h) for h in rounds_ahead], rise,
-                   cows if strat.cow_trades else None, cow_rate)
+                   [inputs.counted(h) for h in rounds_ahead], rise, planned)
 
 
-def cash_cows(inputs: SeasonInputs, rnd: int, strat: Strategy) -> tuple[pd.Series, pd.Index]:
-    """Expected price rise per player, and the cash cows. A cow is cheap, has
-    played this season and is named, and still has room to climb to the price
-    its predicted score deserves (Supercoach prices chase scoring); its rise
-    is that whole climb. Everyone else gets the 3-game price model."""
-    f = inputs.rounds[rnd].frame
-    rise = f["price_change_3"].astype(float)
-    if not strat.cow_price:
-        return rise, f.index[:0]
-    played = sum(inputs.rounds[r].frame["named"].reindex(f.index, fill_value=False)
-                 for r in range(1, rnd + 1)) > 0
-    deserved = (f["predicted_points"] - inputs.price_intercept) / inputs.points_per_dollar
-    headroom = strat.cow_weight * (deserved - f["price"]).clip(lower=0)
-    cow = played & (f["price"] <= strat.cow_price)
-    rise = rise.where(~cow, np.maximum(rise, headroom))
-    return rise, f.index[cow & f["named"] & (headroom > 0)]
+def rise_values(inputs: SeasonInputs, rnd: int, strat: Strategy, cash_rate: float,
+                cows=()) -> tuple[pd.Series, pd.Index]:
+    """What each player's expected price change is worth, in points, and the
+    players valued by the cash-cow plan.
 
-
-def expected_rise(inputs: SeasonInputs, rnd: int, strat: Strategy) -> pd.Series:
-    return cash_cows(inputs, rnd, strat)[0]
+    Everyone: the change over the next PRICE_HORIZON rounds (the game's price
+    rule on the predicted scores, or the trees), counted as cash.
+    With the cash-cow planner on (strat.cow_price), a player up to that price,
+    or a cow already owned, whose price is projected to rise is valued by the
+    plan buy now, hold, sell going into the round s where the rise is worth
+    most:  max over s of (expected price going into s - price now) x u(s),
+    where u(s) = cow_cash_weight x points per $ x the discounted rounds from
+    s to the end: what a dollar released at s buys once it funds an upgrade.
+    His points while held are in the squad's lineup value. The plan is
+    re-made every round, so a cow's value falls away, and selling him wins,
+    once his projected rise is spent."""
+    rd = inputs.rounds[rnd]
+    f, last = rd.frame, max(inputs.rounds)
+    path = rd.paths.get(strat.value)
+    if strat.price_model == "trees" or path is None:
+        rise = f["price_change_3"].astype(float)
+    else:
+        rise = path[min(rnd + PRICE_HORIZON, last + 1)] - path[rnd]
+    value = cash_rate * rise
+    if not strat.cow_price or path is None or rnd >= last:
+        return value, f.index[:0]
+    sells = np.arange(rnd + 1, last + 1)
+    d = strat.discount
+    u = (strat.cow_cash_weight * inputs.points_per_dollar
+         * d ** (sells - rnd) * (1 - d ** (last - sells + 1)) / (1 - d))
+    gain = path[list(sells)].to_numpy() - path[rnd].to_numpy()[:, None]
+    plan = pd.Series((gain * u).max(axis=1), index=f.index)
+    cheap = (f["price"] <= strat.cow_price) & (strat.cow_buys or rnd == 1)
+    cow = (cheap | f.index.isin(list(cows))) & (plan > 0)
+    return value.where(~cow, plan), f.index[cow]
 
 
 def squad_value(squad: list[str], view: Outlook, eligible: dict) -> float:
@@ -369,8 +446,7 @@ def candidate_trades(squad: list[str], bank: float, f: pd.DataFrame, view: Outlo
                      eligible: dict, banned_in: set, locked_out: set, n: int):
     """Shortlist of cap-legal, position-compatible trades by one-for-one value."""
     solo = pd.Series(view.expected.to_numpy() @ view.weights, index=view.expected.index)
-    rise = view.rise if view.rise is not None else f["price_change_3"]
-    solo += view.cash_rate * rise
+    solo += _rise_value(view, f)
     pool = f.index.difference(squad).difference(list(banned_in))
     pool_price = f.loc[pool, "price"]
     pool_pos = pd.Series([set(eligible[p]) for p in pool], index=pool)
@@ -388,41 +464,10 @@ def candidate_trades(squad: list[str], bank: float, f: pd.DataFrame, view: Outlo
     return sorted(options, reverse=True)[:n]
 
 
-def scoring_players(squad: list[str], view: Outlook, eligible: dict, rounds: int = 2) -> set:
-    """Players in the expected scoring side in any of the next `rounds` rounds."""
-    chosen = set()
-    for j, col in enumerate(view.expected.columns[:rounds]):
-        values = view.expected.loc[squad, col].to_numpy()
-        open_slots, filled = dict(LINEUP_SLOTS), 0
-        for i in np.argsort(-values):
-            if values[i] <= 0 or filled == view.counted[j]:
-                break
-            for pos in eligible[squad[i]] + ["FLEX"]:
-                if open_slots.get(pos, 0) > 0:
-                    open_slots[pos] -= 1
-                    chosen.add(squad[i])
-                    filled += 1
-                    break
-    return chosen
-
-
-def cow_trades(squad, bank, f, view, eligible, banned_in, locked_out, base, n=10):
-    """Trades of a player outside the expected scoring side for a cash cow:
-    little lost on the field, and the cow's rise is counted at cow_rate."""
-    bench = [p for p in squad if p not in scoring_players(squad, view, eligible)
-             and p not in locked_out]
-    cows = view.rise[view.cows.difference(squad).difference(list(banned_in))].nlargest(n)
-    out = []
-    for o in bench:
-        o_pos, o_price = set(eligible[o]), f.at[o, "price"]
-        for inn, rise in cows.items():
-            if f.at[inn, "price"] > bank + o_price or not o_pos & set(eligible[inn]):
-                continue
-            new = [inn if p == o else p for p in squad]
-            gain = (squad_value(new, view, eligible) - base + view.cow_rate * rise
-                    + view.cash_rate * (o_price - f.at[inn, "price"] - view.rise[o]))
-            out.append((gain, o, inn))
-    return out
+def _rise_value(view: Outlook, f: pd.DataFrame) -> pd.Series:
+    if view.rise_value is not None:
+        return view.rise_value
+    return view.cash_rate * f["price_change_3"]
 
 
 def best_trade(squad, bank, f, view, eligible, strat, banned_in, locked_out):
@@ -431,15 +476,13 @@ def best_trade(squad, bank, f, view, eligible, strat, banned_in, locked_out):
                                  strat.candidates)
     if strat.lineup_aware:
         base = squad_value(squad, view, eligible)
-        rise = view.rise if view.rise is not None else f["price_change_3"]
+        rise = _rise_value(view, f)
         scored = []
         for _, out, inn in shortlist:
             new = [inn if p == out else p for p in squad]
-            cash = view.cash_rate * (f.at[out, "price"] - f.at[inn, "price"]
-                                     + rise[inn] - rise[out])
+            cash = (view.cash_rate * (f.at[out, "price"] - f.at[inn, "price"])
+                    + rise[inn] - rise[out])
             scored.append((squad_value(new, view, eligible) - base + cash, out, inn))
-        if view.cows is not None and len(view.cows):
-            scored += cow_trades(squad, bank, f, view, eligible, banned_in, locked_out, base)
         shortlist = sorted(scored, reverse=True)
     for gain, out, inn in shortlist:
         new = [inn if p == out else p for p in squad]
@@ -467,9 +510,11 @@ def initial_squad(inputs: SeasonInputs, strat: Strategy) -> tuple[list[str], flo
     """Pre-season pick with the optimizer's season objective. Players are
     valued by expected points per round over the strategy's horizon."""
     view = outlook_for(inputs, 1, strat)
-    per_round = (view.expected.to_numpy() @ view.weights) / view.weights.sum()
+    per_round = pd.Series(view.expected.to_numpy() @ view.weights, index=view.expected.index)
+    if strat.cow_preseason and view.cows is not None and len(view.cows):
+        per_round[view.cows] += view.rise_value[view.cows]    # the cash-cow plan
     first = inputs.rounds[1].frame.assign(
-        predicted_points=pd.Series(per_round, index=view.expected.index)).reset_index()
+        predicted_points=per_round / view.weights.sum()).reset_index()
     pick = select_team(first, round_number=1, apply_injuries=False)
     squad = [p["player_name"] for g in ("starting_13", "bench_4", "flex_1", "reserves_8")
              for p in pick[g]]
@@ -499,6 +544,9 @@ def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
     eligible = {p: _eligible_positions(pos) for rd in data.values()
                 for p, pos in rd.frame["positions"].items()}
     initial = list(squad)
+    first = data[min(data)].frame
+    cows = ({p for p in squad if first.at[p, "price"] <= strat.cow_price}
+            if strat.cow_price else set())
     trades_used, boosts_left = 0, TRADE_BOOSTS
     sold_in, bought_in = {}, {}
     round_rows, trade_rows = [], []
@@ -508,7 +556,7 @@ def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
         f = rd.frame
         made = 0
         if trading and rnd > 1:
-            view = outlook_for(inputs, rnd, strat)
+            view = outlook_for(inputs, rnd, strat, cows)
             limit = get_effective_trade_limit(rnd, trades_used, inputs.bye_trades)
             bar = strat.trade_bar
             spendable = spendable_trades(strat, rnd, max(data), trades_used,
@@ -529,9 +577,14 @@ def simulate_season(inputs: SeasonInputs, strat: Strategy, trading: bool = True,
                 squad = [inn if p == out else p for p in squad]
                 sold_in[out], bought_in[inn] = rnd, rnd
                 banned_in.add(out)
+                cow_buy = inn in view.cows
                 trade_rows.append({"round": rnd, "out": out, "in": inn,
                                    "out_price": f.at[out, "price"], "in_price": f.at[inn, "price"],
-                                   "predicted_gain": round(gain, 1), "boost": boost})
+                                   "predicted_gain": round(gain, 1), "boost": boost,
+                                   "cow_sold": out in cows, "cow_bought": cow_buy})
+                cows.discard(out)
+                if cow_buy:
+                    cows.add(inn)
                 made += 1
                 trades_used += 1                         # a boosted trade still counts
                 if boost:

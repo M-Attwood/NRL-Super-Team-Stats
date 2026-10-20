@@ -4,6 +4,7 @@ visualise.py — every chart the project draws, in one consistent style.
 Weekly pipeline:   plot_squad, plot_season_plan
 Season review:     plot_model_benchmark, plot_error_by_round, plot_calibration,
                    plot_strategy_backtest, plot_season_simulation, plot_team_value,
+                   plot_price_rule,
                    plot_human_comparison, plot_player_predictions,
                    plot_position_analysis, plot_top_players, plot_team_of_season,
                    plot_value_picks
@@ -222,7 +223,7 @@ def plot_error_by_round(test: pd.DataFrame, path: Path, nn_label: str):
     ax.legend(loc="upper right", ncols=3, bbox_to_anchor=(1.0, 1.1))
     _titles(fig, "The edge is biggest early in the season",
             "When a player has only played a few games, the season average is noisy; "
-            "the model leans on last season and price instead.")
+            "the model leans on last season, price and the team list instead.")
     _save(fig, path)
 
 
@@ -272,7 +273,8 @@ def plot_strategy_backtest(weekly: pd.DataFrame, path: Path, season: int,
     fig.subplots_adjust(left=0.07, right=0.97, top=0.78, bottom=0.13, wspace=0.42)
 
     rounds = weekly.index
-    ax.axhline(0, color=INK_2, lw=1.2, ls=(0, (4, 3)))
+    # Stops at the last round so the end-of-line labels never sit on it.
+    ax.hlines(0, rounds[0] - 0.5, rounds[-1] + 0.5, color=INK_2, lw=1.2, ls=(0, (4, 3)))
     ax.text(rounds[0], 0, f"{baseline} heuristic  ", fontsize=8.5, color=INK_2,
             ha="left", va="bottom")
     for name in strategies:
@@ -524,6 +526,56 @@ def plot_team_value(rounds: pd.DataFrame, path: Path, season: int, cap: float):
     _save(fig, path)
 
 
+def plot_price_rule(moves: pd.DataFrame, metrics: dict, season: int, path: Path):
+    """Left: every price move of the season against the reverse-engineered
+    price rule. Right: forecasting the 3-game price change - the old trees,
+    the rule fed predicted scores, and the rule fed the real scores."""
+    apply_style()
+    fig, (ax, ax2) = plt.subplots(1, 2, figsize=(11.5, 5.4),
+                                  gridspec_kw={"width_ratios": [1, 1.3]})
+    fig.subplots_adjust(left=0.07, right=0.97, top=0.76, bottom=0.15, wspace=0.55)
+    actual = (moves["price"] - moves["price_before"]) / 1e3
+    rule = (moves["rule_price"] - moves["price_before"]) / 1e3
+    lim = float(np.nanpercentile(np.abs(actual), 99.9)) * 1.05
+    ax.plot([-lim, lim], [-lim, lim], color=BASELINE, lw=1, zorder=1)
+    ax.scatter(actual, rule, s=7, color=BLUE, alpha=0.35, lw=0, zorder=2)
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_aspect("equal")
+    ax.set_xlabel(r"Real price change after a game (\$K)")
+    ax.set_ylabel(r"Price rule (\$K)")
+    within = float(np.mean(np.abs(moves["rule_price"] - moves["price"]) <= 100))
+    ax.text(0.04, 0.96, f"{len(moves):,} moves\n{within:.1%} within " + r"\$100",
+            transform=ax.transAxes, fontsize=9, color=INK_2, va="top")
+    ax.set_title(f"Every {season} price move", fontsize=10.5, color=INK, loc="left")
+
+    rows = [("Gradient-boosted trees\n(the old price model)", "price_trees", DE_EMPHASIS),
+            ("Price rule +\npredicted scores", "price_rule", BLUE),
+            ("Price rule + real scores\n(ceiling: scores known)", "price_rule_real_scores",
+             DE_EMPHASIS)]
+    y = np.arange(len(rows))[::-1]
+    r2 = [metrics[f"{k}_r2"] for _, k, _ in rows]
+    ax2.barh(y, r2, height=0.56, color=[c for *_, c in rows])
+    for yy, (_, k, _), v in zip(y, rows, r2):
+        mae = metrics[f"{k}_mae"] / 1e3
+        ax2.text(v + 0.015, yy, f"R\u00b2 {v:.2f}  (off by " + r"\$" + f"{mae:.0f}K)",
+                 va="center", fontsize=9, color=INK_2)
+    ax2.set_yticks(y, [label for label, *_ in rows])
+    ax2.set_xlim(0, 1.3)
+    ax2.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
+    ax2.grid(axis="y", visible=False)
+    ax2.set_xlabel("R\u00b2 of the price change over a player's next 3 games")
+    ax2.set_title("Forecasting the next 3 games", fontsize=10.5, color=INK, loc="left")
+    _titles(fig, f"Supercoach's price formula, reverse-engineered: {within:.1%} of {season} "
+                 f"price moves to the $100",
+            "New price = \u03bc \u00d7 (old price + K \u00d7 the last three scores), zero-sum "
+            "each round. Prices follow scores exactly, so forecasting one is forecasting the other.")
+    _footnote(fig, f"Rule constants read only from earlier price moves; trees trained on "
+                   f"2022-{season - 1}; the 3-game forecasts use the score model's prediction "
+                   f"for each of the 3 games.")
+    _save(fig, path)
+
+
 # ── Season review: players and positions ──────────────────────────────────────
 
 def _player_table(test: pd.DataFrame, nn_label: str, min_games: int = 10) -> pd.DataFrame:
@@ -771,7 +823,8 @@ def plot_feature_importance(imp: pd.DataFrame, path: Path, season: int):
     ax.grid(axis="y", visible=False)
     ax.set_xlabel(f"Extra error when the group is shuffled (points per game, every {season} game)")
     ax.legend(loc="lower right")
-    _titles(fig, "The network reads how points are scored; ridge leans on price",
+    _titles(fig, "The network reads how points are scored and the team list; "
+                 "ridge leans on price",
             "Permutation importance: shuffle one group of inputs across games and measure "
             "how much worse the predictions get.")
     _footnote(fig, "(n) = inputs in the group. Whiskers: range over 5 shuffles. "
@@ -800,10 +853,11 @@ def plot_importance_by_phase(imp: pd.DataFrame, early_rounds: int, path: Path):
     ax.grid(axis="y", visible=False)
     ax.set_xlabel("Extra error when the group is shuffled (points per game)")
     ax.legend(loc="lower right")
-    jump = (imp["nn_early"] - imp["nn_later"]).idxmax()
-    ratio = imp.at[jump, "nn_early"] / imp.at[jump, "nn_later"]
-    _titles(fig, f"In the first rounds, {imp.at[jump, 'group'].lower()} count "
-                 f"{ratio:.1f}x as much",
+    shift = (imp["nn_early"] - imp["nn_later"])[imp[["nn_early", "nn_later"]].max(axis=1) >= 0.1]
+    early, later = (imp.at[shift.idxmax(), "group"].lower(),
+                    imp.at[shift.idxmin(), "group"].lower())
+    _titles(fig, f"Early in the season the network leans more on {early}; "
+                 f"later, on {later}",
             "The same network, permutation importance measured separately on the first "
             "rounds of 2026 and on the rest of the season.")
     _save(fig, path)

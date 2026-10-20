@@ -7,8 +7,8 @@ import pandas as pd
 import pytest
 
 from season_sim import (IMPROVED, ORIGINAL, RoundData, SeasonInputs, best_lineup,
-                        Outlook, expected_rise, greedy_lineup_value, outlook_for,
-                        price_table, round_score, scoring_players, spendable_trades)
+                        greedy_lineup_value, outlook_for, price_table, rise_values,
+                        round_score, spendable_trades)
 
 
 def test_lineup_respects_active_quotas():
@@ -42,13 +42,15 @@ def test_bye_rounds_count_the_best_13_with_the_captain_doubled():
     assert few["points"] == scores.iloc[:9].sum() + 90 and few["empty_slots"] == 4
 
 
-def test_price_table_carries_prices_through_games_missed():
+def test_trades_use_the_price_going_into_the_round():
+    # A row's price is the price after that round's game. A plays rounds 1 and 3.
     rounds = pd.DataFrame({"player_name": ["A", "A"], "year": [2026, 2026],
                            "round": [1, 3], "price": [500_000, 550_000]})
     totals = {2026: pd.DataFrame({"player_name": ["A", "B"],
                                   "start_price": [480_000, 200_000]})}
     px = price_table(rounds, totals, 2026, last_round=4)
-    assert list(px.loc["A"]) == [500_000, 500_000, 550_000, 550_000]
+    # Round 3 is traded at the price after round 1, not after round 3's game.
+    assert list(px.loc["A"]) == [480_000, 500_000, 500_000, 550_000]
     assert list(px.loc["B"]) == [200_000] * 4         # never played: start price
 
 
@@ -119,27 +121,32 @@ def test_bye_exempt_lets_a_bye_round_use_its_full_allowance():
     assert spendable_trades(exempt, 17, 27, trades_used=33, bye_trades=byes) == 0   # normal round
 
 
-def test_cash_cows_are_valued_by_their_whole_expected_rise():
-    frame = pd.DataFrame({
-        "price": [250_000.0, 250_000.0, 700_000.0], "predicted_points": [60.0, 60.0, 90.0],
-        "price_change_3": [40_000.0, 40_000.0, 5_000.0], "named": [True, False, True],
-    }, index=["cow", "unplayed", "premium"])
-    rounds = {1: RoundData(frame, pd.DataFrame(), set())}
-    inputs = SeasonInputs(2026, rounds, points_per_dollar=1e-4, price_intercept=0.0)
-    off = expected_rise(inputs, 1, IMPROVED)
-    assert list(off) == [40_000, 40_000, 5_000]               # off: the 3-game price model
-    on = expected_rise(inputs, 1, replace(IMPROVED, cow_price=300_000))
-    assert on["cow"] == 350_000             # deserves $600K (60 pts / 1e-4), costs $250K
-    assert on["unplayed"] == 40_000         # no games yet: no cow bonus
-    assert on["premium"] == 5_000           # over the price cap
+def _cow_inputs():
+    # Round 1 of 3. Price paths going into rounds 1-3 and after round 3.
+    frame = pd.DataFrame({"price": [250_000.0, 700_000.0, 420_000.0],
+                          "price_change_3": [0.0, 0.0, 0.0]},
+                         index=["cow", "premium", "owned_cow"])
+    path = pd.DataFrame({1: [250_000.0, 700_000.0, 420_000.0],
+                         2: [300_000.0, 720_000.0, 440_000.0],
+                         3: [330_000.0, 740_000.0, 450_000.0],
+                         4: [340_000.0, 760_000.0, 450_000.0]}, index=frame.index)
+    rounds = {r: RoundData(frame, pd.DataFrame(), set(), {"model": path}) for r in (1, 2, 3)}
+    return SeasonInputs(2026, rounds, points_per_dollar=1e-4)
 
 
-def test_scoring_players_are_the_expected_side_this_round_or_next():
-    # Seven centres/wingers: 4 CTW slots + FLEX = 5 score each round.
-    squad = [f"c{i}" for i in range(7)]
-    expected = pd.DataFrame({1: [70, 60, 50, 40, 30, 20, 10],
-                             2: [70, 60, 50, 40, 10, 20, 80]}, index=squad, dtype=float)
-    view = Outlook(expected, np.ones(2), 0.0, [18, 18])
-    eligible = {p: ["CTW"] for p in squad}
-    # Round 1 fields c0-c4; round 2 swaps c4 for c6. c5 never scores.
-    assert scoring_players(squad, view, eligible) == {"c0", "c1", "c2", "c3", "c4", "c6"}
+def test_price_rises_count_as_cash_over_the_next_three_rounds():
+    value, cows = rise_values(_cow_inputs(), 1, IMPROVED, cash_rate=0.001)
+    assert value["cow"] == pytest.approx(0.001 * 90_000)       # path[4] - path[1]
+    assert value["premium"] == pytest.approx(0.001 * 60_000)
+    assert len(cows) == 0                                      # planner off
+
+
+def test_cash_cow_plan_sells_where_the_rise_is_worth_most():
+    planner = replace(IMPROVED, cow_price=300_000, cow_cash_weight=1.0, discount=0.5)
+    value, cows = rise_values(_cow_inputs(), 1, planner, cash_rate=0.001, cows={"owned_cow"})
+    # Sell going into round 2 (+$50K, $1 then buys 1e-4 pts in rounds 2-3:
+    # 0.5 + 0.25) or round 3 (+$80K, round 3 only: 0.25).
+    assert value["cow"] == pytest.approx(max(50_000 * 1e-4 * 0.75, 80_000 * 1e-4 * 0.25))
+    assert value["owned_cow"] == pytest.approx(20_000 * 1e-4 * 0.75)   # owned, past the cap
+    assert value["premium"] == pytest.approx(0.001 * 60_000)          # too dear: no plan
+    assert set(cows) == {"cow", "owned_cow"}

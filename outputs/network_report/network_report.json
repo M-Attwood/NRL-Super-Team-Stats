@@ -1,36 +1,36 @@
 {
-  "features": 49,
-  "trainable_parameters": 5363,
+  "features": 51,
+  "trainable_parameters": 5493,
   "training_games": 25284,
-  "epochs_run": 47,
-  "best_epoch": 35,
-  "best_val_rmse": 23.07,
+  "epochs_run": 57,
+  "best_epoch": 45,
+  "best_val_rmse": 22.76,
   "test_metrics": {
     "network": {
-      "mae": 17.012,
-      "rmse": 22.693,
-      "r2": 0.235,
-      "rank_corr": 0.509
+      "mae": 16.795,
+      "rmse": 22.418,
+      "r2": 0.254,
+      "rank_corr": 0.526
     },
     "ridge": {
-      "mae": 16.985,
-      "rmse": 22.652,
-      "r2": 0.238,
-      "rank_corr": 0.512
+      "mae": 16.787,
+      "rmse": 22.397,
+      "r2": 0.255,
+      "rank_corr": 0.53
     },
     "ensemble": {
-      "mae": 16.972,
-      "rmse": 22.643,
-      "r2": 0.239,
-      "rank_corr": 0.512
+      "mae": 16.759,
+      "rmse": 22.373,
+      "r2": 0.257,
+      "rank_corr": 0.53
     }
   },
   "deep_path": {
-    "mean_abs_correction": 6.82,
-    "share_over_5_points": 0.597,
-    "share_over_10_points": 0.226,
-    "wide_only_mae": 18.355,
-    "corr_network_vs_ridge": 0.984
+    "mean_abs_correction": 6.7,
+    "share_over_5_points": 0.575,
+    "share_over_10_points": 0.223,
+    "wide_only_mae": 18.096,
+    "corr_network_vs_ridge": 0.982
   },
   "architecture_comparison_dev": {
     "Season average (heuristic)": {
@@ -43,60 +43,60 @@
       "mae_seed_range": null
     },
     "Ridge regression": {
-      "mae": 16.663,
-      "rmse": 22.36,
-      "r2": 0.226,
-      "rank_corr": 0.488,
-      "params": 50.0,
+      "mae": 16.52,
+      "rmse": 22.179,
+      "r2": 0.238,
+      "rank_corr": 0.502,
+      "params": 52.0,
       "epochs": null,
       "mae_seed_range": null
     },
     "Plain MLP, no wide path": {
-      "mae": 16.787,
-      "rmse": 22.438,
-      "r2": 0.22,
-      "rank_corr": 0.482,
-      "params": 5313.0,
-      "epochs": 54.0,
+      "mae": 16.589,
+      "rmse": 22.197,
+      "r2": 0.237,
+      "rank_corr": 0.498,
+      "params": 5441.0,
+      "epochs": 45.0,
       "mae_seed_range": null
     },
     "Wide & Deep (production)": {
-      "mae": 16.745,
-      "rmse": 22.428,
-      "r2": 0.221,
-      "rank_corr": 0.482,
-      "params": 5363,
-      "epochs": 71,
+      "mae": 16.591,
+      "rmse": 22.223,
+      "r2": 0.235,
+      "rank_corr": 0.496,
+      "params": 5493,
+      "epochs": 45,
       "mae_seed_range": [
-        16.713,
-        16.752
+        16.557,
+        16.591
       ]
     },
     "Wide & Deep + ridge average": {
-      "mae": 16.652,
-      "rmse": 22.337,
-      "r2": 0.227,
-      "rank_corr": 0.488,
-      "params": 5413.0,
+      "mae": 16.519,
+      "rmse": 22.159,
+      "r2": 0.24,
+      "rank_corr": 0.501,
+      "params": 5545.0,
       "epochs": null,
       "mae_seed_range": null
     },
     "Wide & Deep, 3 layers (128-64-32)": {
-      "mae": 16.905,
-      "rmse": 22.535,
-      "r2": 0.213,
-      "rank_corr": 0.475,
-      "params": 16819.0,
-      "epochs": 44.0,
+      "mae": 16.613,
+      "rmse": 22.249,
+      "r2": 0.233,
+      "rank_corr": 0.494,
+      "params": 17077.0,
+      "epochs": 36.0,
       "mae_seed_range": null
     },
     "Wide & Deep, Huber loss": {
-      "mae": 16.659,
-      "rmse": 22.613,
-      "r2": 0.208,
-      "rank_corr": 0.483,
-      "params": 5363.0,
-      "epochs": 96.0,
+      "mae": 16.47,
+      "rmse": 22.371,
+      "r2": 0.225,
+      "rank_corr": 0.5,
+      "params": 5493.0,
+      "epochs": 44.0,
       "mae_seed_range": null
     }
   }

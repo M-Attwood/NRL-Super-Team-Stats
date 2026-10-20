@@ -45,6 +45,7 @@ FEATURE_GROUPS = {
                     "games_played"],
     "Minutes and role": ["mins_avg", "mins_last3", "mins_last1", "ppm", "last_started",
                          "last_benched", "start_share"],
+    "This game's team list": ["named_start", "named_bench"],
     "How points are scored": list(ROLLING_STATS.values()),
     "Price and break-even": ["price", "break_even", "season_price_change"],
     "Last season": ["prev_season_avg", "prev_season_games", "has_prev_season"],

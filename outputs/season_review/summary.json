@@ -4,22 +4,22 @@
   "games_tested": 6407,
   "model_benchmark": {
     "NN + ridge ensemble": {
-      "mae": 16.9715,
-      "rmse": 22.6432,
-      "r2": 0.2388,
-      "rank_corr": 0.5123
+      "mae": 16.7595,
+      "rmse": 22.3728,
+      "r2": 0.2569,
+      "rank_corr": 0.5298
     },
     "Wide & Deep NN": {
-      "mae": 17.0117,
-      "rmse": 22.693,
-      "r2": 0.2355,
-      "rank_corr": 0.5088
+      "mae": 16.7946,
+      "rmse": 22.4183,
+      "r2": 0.2539,
+      "rank_corr": 0.5262
     },
     "Ridge regression": {
-      "mae": 16.985,
-      "rmse": 22.6517,
-      "r2": 0.2382,
-      "rank_corr": 0.5124
+      "mae": 16.7869,
+      "rmse": 22.3972,
+      "r2": 0.2553,
+      "rank_corr": 0.5301
     },
     "Season average": {
       "mae": 18.079,
@@ -51,77 +51,137 @@
     "availability_log_loss": 0.3818,
     "naive_log_loss": 0.5242,
     "origin_weeks_log_loss": 0.4585,
-    "price_change_r2": 0.153,
-    "price_change_mae": 51378.9069
+    "price_trees_r2": 0.2817,
+    "price_trees_mae": 47306.0999,
+    "price_rule_r2": 0.3185,
+    "price_rule_mae": 45530.0545,
+    "price_rule_real_scores_r2": 0.9905,
+    "price_rule_real_scores_mae": 5429.1818,
+    "price_rule_reproduction": {
+      "moves": 5943,
+      "K": 1086.6,
+      "within_100_explained": 0.9988,
+      "mae_explained": 25.0547,
+      "within_1000_one_round_ahead": 0.4215,
+      "mae_one_round_ahead": 1857.8832,
+      "r2_change_one_round_ahead": 0.9936
+    }
+  },
+  "price_rule_by_season": {
+    "2022": {
+      "moves": 5604,
+      "K": 974.2,
+      "within_100_explained": 0.9966,
+      "mae_explained": 31.3704,
+      "within_1000_one_round_ahead": 0.6451,
+      "mae_one_round_ahead": 1144.2236,
+      "r2_change_one_round_ahead": 0.9959
+    },
+    "2023": {
+      "moves": 5953,
+      "K": 1169.1,
+      "within_100_explained": 1.0,
+      "mae_explained": 23.7191,
+      "within_1000_one_round_ahead": 0.3734,
+      "mae_one_round_ahead": 2398.001,
+      "r2_change_one_round_ahead": 0.9894
+    },
+    "2024": {
+      "moves": 5943,
+      "K": 1134.4,
+      "within_100_explained": 1.0,
+      "mae_explained": 23.5571,
+      "within_1000_one_round_ahead": 0.2699,
+      "mae_one_round_ahead": 2378.7986,
+      "r2_change_one_round_ahead": 0.9908
+    },
+    "2025": {
+      "moves": 5950,
+      "K": 1087.7,
+      "within_100_explained": 1.0,
+      "mae_explained": 23.7647,
+      "within_1000_one_round_ahead": 0.3491,
+      "mae_one_round_ahead": 2127.2101,
+      "r2_change_one_round_ahead": 0.9898
+    },
+    "2026": {
+      "moves": 5943,
+      "K": 1086.6,
+      "within_100_explained": 0.9988,
+      "mae_explained": 25.0547,
+      "within_1000_one_round_ahead": 0.4215,
+      "mae_one_round_ahead": 1857.8832,
+      "r2_change_one_round_ahead": 0.9936
+    }
   },
   "predictor_comparison": {
     "season_points": {
-      "NN + ridge ensemble": 31804,
-      "Season average": 30401,
-      "Price only": 31534,
-      "Hindsight-perfect": 50645
+      "NN + ridge ensemble": 34421,
+      "Season average": 34344,
+      "Price only": 30924,
+      "Hindsight-perfect": 51371
     },
     "rounds_won_by_model": {
-      "Season average": 20,
-      "Price only": 17,
+      "Season average": 12,
+      "Price only": 23,
       "Hindsight-perfect": 0
     }
   },
   "season_simulation": {
     "season_points": {
-      "Model + trading strategy": 30936,
-      "Model + original strategy": 28696,
-      "Season averages + same strategy": 30152,
-      "Pre-season squad, no trades": 25556
+      "Model + trading strategy": 33479,
+      "Model + original strategy": 31399,
+      "Season averages + same strategy": 33470,
+      "Pre-season squad, no trades": 27827
     },
     "average_per_round": {
-      "Model + trading strategy": 1145.8,
-      "Model + original strategy": 1062.8,
-      "Season averages + same strategy": 1116.7,
-      "Pre-season squad, no trades": 946.5
+      "Model + trading strategy": 1240.0,
+      "Model + original strategy": 1162.9,
+      "Season averages + same strategy": 1239.6,
+      "Pre-season squad, no trades": 1030.6
     },
     "empty_scoring_slots": {
-      "Model + trading strategy": 17,
-      "Model + original strategy": 38,
-      "Season averages + same strategy": 41,
-      "Pre-season squad, no trades": 103
+      "Model + trading strategy": 6,
+      "Model + original strategy": 14,
+      "Season averages + same strategy": 28,
+      "Pre-season squad, no trades": 64
     },
-    "bye_rounds_12_15_18": 2457,
+    "bye_rounds_12_15_18": 2624,
     "trades_used": 46,
     "boosts_used": 5,
-    "final_team_value": 13466700
+    "final_team_value": 15511100
   },
   "totals_by_season": {
     "2024": {
-      "Model + trading strategy": 30158,
-      "Model + original strategy": 27676,
-      "Season averages + same strategy": 26017,
-      "Pre-season squad, no trades": 21838
+      "Model + trading strategy": 30262,
+      "Model + original strategy": 28262,
+      "Season averages + same strategy": 27329,
+      "Pre-season squad, no trades": 21718
     },
     "2025": {
-      "Model + trading strategy": 32457,
-      "Model + original strategy": 29420,
-      "Season averages + same strategy": 29501,
-      "Pre-season squad, no trades": 25685
+      "Model + trading strategy": 30874,
+      "Model + original strategy": 28752,
+      "Season averages + same strategy": 30178,
+      "Pre-season squad, no trades": 27319
     },
     "2026": {
-      "Model + trading strategy": 30936,
-      "Model + original strategy": 28696,
-      "Season averages + same strategy": 30152,
-      "Pre-season squad, no trades": 25556
+      "Model + trading strategy": 33479,
+      "Model + original strategy": 31399,
+      "Season averages + same strategy": 33470,
+      "Pre-season squad, no trades": 27827
     }
   },
   "vs_real_coaches": {
-    "Overall winner": -6260,
-    "Top 5% of coaches (avg)": -4736,
-    "Top 10% of coaches (avg)": -4421,
-    "Average coach": 2171,
-    "My real 2026 team": 2980
+    "Overall winner": -3717,
+    "Top 5% of coaches (avg)": -2193,
+    "Top 10% of coaches (avg)": -1878,
+    "Average coach": 4714,
+    "My real 2026 team": 5523
   },
   "preseason_correlation_with_final_average": {
-    "NN + ridge ensemble": 0.634,
+    "NN + ridge ensemble": 0.651,
     "Start price": 0.634,
-    "Last season's average": 0.573
+    "Last season's average": 0.578
   },
   "salary_cap": 11950000
 }

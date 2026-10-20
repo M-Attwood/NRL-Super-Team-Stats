@@ -46,7 +46,7 @@ def load_data(year: int, no_scrape: bool = False) -> tuple[pd.DataFrame, dict]:
 def ensure_model(rounds: pd.DataFrame, totals: dict, year: int, retrain: bool):
     """Load the saved model, or evaluate-then-train a fresh one."""
     from model import (MODEL_PATH, build_training_pairs, evaluate_holdout,
-                       load_model, train_production_model)
+                       fit_rookie_baseline, load_model, train_production_model)
 
     if MODEL_PATH.exists() and not retrain:
         return load_model()
@@ -54,7 +54,8 @@ def ensure_model(rounds: pd.DataFrame, totals: dict, year: int, retrain: bool):
     pairs = build_training_pairs(rounds, totals)
     test_year = year if (pairs["year"] == year).sum() >= 500 else year - 1
     metrics, _, _ = evaluate_holdout(pairs, test_year)
-    return train_production_model(pairs, metrics, test_year)
+    return train_production_model(pairs, metrics, test_year,
+                                  rookie_fit=fit_rookie_baseline(rounds))
 
 
 def next_round_to_predict(rounds: pd.DataFrame, year: int) -> int:
