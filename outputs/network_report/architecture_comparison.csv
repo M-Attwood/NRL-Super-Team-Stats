@@ -1,0 +1,8 @@
+,mae,rmse,r2,rank_corr,params,epochs,mae_seed_range
+Season average (heuristic),17.879,23.985,0.109,0.44,0.0,,
+Ridge regression,16.663,22.36,0.226,0.488,50.0,,
+"Plain MLP, no wide path",16.787,22.438,0.22,0.482,5313.0,54.0,
+Wide & Deep (production),16.745,22.428,0.221,0.482,5363,71,"[16.713, 16.752]"
+Wide & Deep + ridge average,16.652,22.337,0.227,0.488,5413.0,,
+"Wide & Deep, 3 layers (128-64-32)",16.905,22.535,0.213,0.475,16819.0,44.0,
+"Wide & Deep, Huber loss",16.659,22.613,0.208,0.483,5363.0,96.0,

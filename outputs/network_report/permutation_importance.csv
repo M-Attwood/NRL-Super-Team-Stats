@@ -1,0 +1,10 @@
+group,features,nn_mae_rise,nn_min,nn_max,ridge_mae_rise,nn_early,nn_later
+How points are scored,19,0.956,0.848,1.022,0.658,1.085,0.955
+Price and break-even,3,0.746,0.616,0.842,1.586,0.758,0.693
+Minutes and role,7,0.541,0.5,0.573,0.452,0.825,0.464
+Recent form,6,0.231,0.184,0.274,0.131,0.314,0.203
+Position,7,0.037,0.017,0.051,0.026,0.058,0.048
+Next opponent,1,0.036,0.017,0.064,0.043,-0.042,0.049
+Round and days off,2,0.026,0.018,0.043,0.005,0.003,0.04
+Last season,3,0.015,0.006,0.027,0.026,0.032,0.006
+Own team's strength,1,0.0,-0.005,0.008,-0.001,-0.009,-0.002

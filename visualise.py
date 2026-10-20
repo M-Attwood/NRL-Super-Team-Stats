@@ -4,8 +4,10 @@ visualise.py — every chart the project draws, in one consistent style.
 Weekly pipeline:   plot_squad, plot_season_plan
 Season review:     plot_model_benchmark, plot_error_by_round, plot_calibration,
                    plot_strategy_backtest, plot_season_simulation, plot_team_value,
-                   plot_player_predictions, plot_position_analysis, plot_top_players,
-                   plot_team_of_season, plot_value_picks
+                   plot_human_comparison, plot_player_predictions,
+                   plot_position_analysis, plot_top_players, plot_team_of_season,
+                   plot_value_picks
+Network report:    plot_network_training, plot_feature_importance, plot_importance_by_phase
 
 Style: light chart surface, hairline grids, thin marks, a fixed categorical
 order (validated for colour-vision deficiency), text in ink colours only.
@@ -484,7 +486,8 @@ def plot_season_simulation(results: dict, highlight: str, path: Path, season: in
     gain = total - results[compare]["points"].sum()
     _titles(fig, f"The full {season} season under Supercoach rules: {total:,.0f} points",
             f"Pre-season squad, then trades every round (46, up to 5 boosted rounds), with real "
-            f"prices, team lists and byes; captain doubled. {gain:+,.0f} vs. the original trading strategy.")
+            f"prices, team lists and byes; captain doubled. Trading added {gain:,.0f} points over "
+            "keeping the pre-season squad.")
     _footnote(fig, "Every decision uses only what was known before that round; points are the "
                    f"real {season} scores. Scoring 18 = 13 starters + 4 bench + 1 flex "
                    f"(best 13 count in the bye rounds).")
@@ -708,35 +711,99 @@ def plot_human_comparison(simulated: dict, humans: dict, highlight: str, path: P
     _save(fig, path)
 
 
-def plot_strategy_improvement(by_season: dict, original: str, improved: str,
-                              test_season: int, path: Path):
-    """Original vs improved trading strategy, per season (dev seasons + test)."""
+# ── Season review: the network up close (network_report.py) ─────────────────
+
+def plot_network_training(history: pd.DataFrame, best_epoch: int, path: Path):
+    """Per-epoch error on the fit set and on held-out players."""
     apply_style()
-    seasons = sorted(by_season)
-    x = np.arange(len(seasons))
-    w = 0.34
-    fig, ax = plt.subplots(figsize=(10, 5.4))
-    fig.subplots_adjust(left=0.09, right=0.97, top=0.78, bottom=0.14)
-    for off, (label, colour) in zip((-w / 2, w / 2), [(original, ORANGE), (improved, BLUE)]):
-        vals = [by_season[y][label] for y in seasons]
-        ax.bar(x + off, vals, width=w * 0.92, color=colour, label=label)
-        for xx, v in zip(x + off, vals):
-            ax.text(xx, v + 250, f"{v:,.0f}", ha="center", fontsize=9, color=INK_2)
-    top = max(max(d.values()) for d in by_season.values())
-    for xx, y in zip(x, seasons):
-        gain = by_season[y][improved] - by_season[y][original]
-        ax.text(xx, top * 1.07, f"{gain:+,.0f}", ha="center", fontsize=10.5,
-                fontweight="semibold", color=INK)
-    ax.set_xticks(x, [f"{y}\n{'test season' if y == test_season else 'development'}"
-                      for y in seasons])
-    ax.set_ylim(0, top * 1.14)
-    ax.set_ylabel("Season points")
-    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v / 1000:.0f}k"))
-    ax.grid(axis="x", visible=False)
-    ax.legend(loc="upper left", ncols=2, bbox_to_anchor=(0, 1.1))
-    wins = all(by_season[y][improved] > by_season[y][original] for y in seasons)
-    _titles(fig, "The improved strategy wins in every season" if wins
-            else "Improved vs. original strategy, season by season",
-            "Every setting was tuned on 2024 and 2025 (models trained on earlier years); "
-            f"{test_season} is the held-out test season and was never used for tuning.")
+    fig, ax = plt.subplots(figsize=(10, 4.8))
+    fig.subplots_adjust(left=0.08, right=0.84, top=0.78, bottom=0.13)
+    ep = history.index
+    ax.plot(ep, history["mae"], color=BLUE)
+    ax.plot(ep, history["val_mae"], color=ORANGE)
+    for col, name in [("mae", "Fit set"), ("val_mae", "Held-out\nplayers")]:
+        ax.annotate(name, (ep[-1], history[col].iloc[-1]), xytext=(8, 0),
+                    textcoords="offset points", va="center", fontsize=9, color=INK_2,
+                    annotation_clip=False)
+    ax.axvline(best_epoch, color=INK_2, lw=1, ls=(0, (4, 3)))
+    best = history.loc[best_epoch, "val_mae"]
+    ax.annotate(f"best: epoch {best_epoch}, {best:.2f} pts\nweights restored here",
+                (best_epoch, best), xytext=(-10, 28), textcoords="offset points",
+                ha="right", fontsize=9, color=INK_2,
+                arrowprops=dict(arrowstyle="-", color=BASELINE, lw=0.7))
+    if "learning_rate" in history:
+        lr = history["learning_rate"].to_numpy()
+        drops = ep[1:][lr[1:] < lr[:-1]]
+        hi = ax.get_ylim()[1]
+        for d in drops:
+            ax.plot(d, hi, marker="v", color=MUTED, markersize=6, clip_on=False)
+        if len(drops):
+            ax.text(drops[0] - 0.8, hi, "learning rate halved", fontsize=8.5, color=MUTED,
+                    ha="right", va="center")
+    ax.set_xlabel("Epoch (one pass over the training games)")
+    ax.set_ylabel("Average error (points per game)")
+    _titles(fig, "Training stops when held-out players stop improving",
+            f"Adam, batch 256. Early stopping watches 15% of players held out of the fit "
+            f"and keeps the best epoch ({best_epoch} of {len(history)}).")
+    _save(fig, path)
+
+
+def _group_labels(imp: pd.DataFrame) -> list[str]:
+    return [f"{g}  ({n})" for g, n in zip(imp["group"], imp["features"])]
+
+
+def plot_feature_importance(imp: pd.DataFrame, path: Path, season: int):
+    """Permutation importance by input group, network vs ridge."""
+    apply_style()
+    imp = imp.sort_values("nn_mae_rise")
+    y = np.arange(len(imp))
+    fig, ax = plt.subplots(figsize=(10.5, 5.2))
+    fig.subplots_adjust(left=0.25, right=0.96, top=0.78, bottom=0.17)
+    ax.barh(y, imp["nn_mae_rise"], height=0.58, color=BLUE, label="Wide & Deep network")
+    ax.hlines(y, imp["nn_min"], imp["nn_max"], color=INK_2, lw=1)
+    ax.scatter(imp["ridge_mae_rise"], y, marker="D", s=34, color=SURFACE,
+               edgecolor=INK_2, lw=1.2, zorder=3, label="Ridge regression")
+    pad = imp["ridge_mae_rise"].max() * 0.012
+    for yy, v, hi in zip(y, imp["nn_mae_rise"], imp["nn_max"]):
+        ax.text(max(v, hi, 0) + pad, yy, f"{v:+.2f}", fontsize=8.5, color=INK_2,
+                va="center")
+    ax.set_yticks(y, _group_labels(imp))
+    ax.grid(axis="y", visible=False)
+    ax.set_xlabel(f"Extra error when the group is shuffled (points per game, every {season} game)")
+    ax.legend(loc="lower right")
+    _titles(fig, "The network reads how points are scored; ridge leans on price",
+            "Permutation importance: shuffle one group of inputs across games and measure "
+            "how much worse the predictions get.")
+    _footnote(fig, "(n) = inputs in the group. Whiskers: range over 5 shuffles. "
+                   "Both models trained on 2022-2025.")
+    _save(fig, path)
+
+
+def plot_importance_by_phase(imp: pd.DataFrame, early_rounds: int, path: Path):
+    """The network's permutation importance early in the season vs later."""
+    apply_style()
+    imp = imp.sort_values("nn_mae_rise")
+    y = np.arange(len(imp))
+    h = 0.36
+    fig, ax = plt.subplots(figsize=(10.5, 5.4))
+    fig.subplots_adjust(left=0.25, right=0.96, top=0.78, bottom=0.12)
+    series = [("nn_early", f"Rounds 2-{early_rounds} (1-{early_rounds - 1} games known)", BLUE),
+              ("nn_later", f"Rounds {early_rounds + 1}-27", ORANGE)]
+    for k, (col, label, colour) in enumerate(series):
+        ax.barh(y + (h / 2 if k == 0 else -h / 2), imp[col].clip(lower=0), height=h * 0.9,
+                color=colour, label=label)
+    pad = imp[["nn_early", "nn_later"]].to_numpy().max() * 0.012
+    for yy, a, b in zip(y, imp["nn_early"], imp["nn_later"]):
+        ax.text(max(a, 0) + pad, yy + h / 2, f"{a:+.2f}", fontsize=8, color=INK_2, va="center")
+        ax.text(max(b, 0) + pad, yy - h / 2, f"{b:+.2f}", fontsize=8, color=INK_2, va="center")
+    ax.set_yticks(y, _group_labels(imp))
+    ax.grid(axis="y", visible=False)
+    ax.set_xlabel("Extra error when the group is shuffled (points per game)")
+    ax.legend(loc="lower right")
+    jump = (imp["nn_early"] - imp["nn_later"]).idxmax()
+    ratio = imp.at[jump, "nn_early"] / imp.at[jump, "nn_later"]
+    _titles(fig, f"In the first rounds, {imp.at[jump, 'group'].lower()} count "
+                 f"{ratio:.1f}x as much",
+            "The same network, permutation importance measured separately on the first "
+            "rounds of 2026 and on the rest of the season.")
     _save(fig, path)

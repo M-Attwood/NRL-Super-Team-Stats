@@ -69,40 +69,46 @@
   },
   "season_simulation": {
     "season_points": {
-      "Model + improved strategy": 30936,
+      "Model + trading strategy": 30936,
       "Model + original strategy": 28696,
-      "Season averages + improved strategy": 30152,
-      "Model squad, no trades": 25556
+      "Season averages + same strategy": 30152,
+      "Pre-season squad, no trades": 25556
     },
     "average_per_round": {
-      "Model + improved strategy": 1145.8,
+      "Model + trading strategy": 1145.8,
       "Model + original strategy": 1062.8,
-      "Season averages + improved strategy": 1116.7,
-      "Model squad, no trades": 946.5
+      "Season averages + same strategy": 1116.7,
+      "Pre-season squad, no trades": 946.5
     },
     "empty_scoring_slots": {
-      "Model + improved strategy": 17,
+      "Model + trading strategy": 17,
       "Model + original strategy": 38,
-      "Season averages + improved strategy": 41,
-      "Model squad, no trades": 103
+      "Season averages + same strategy": 41,
+      "Pre-season squad, no trades": 103
     },
     "bye_rounds_12_15_18": 2457,
     "trades_used": 46,
     "boosts_used": 5,
     "final_team_value": 13466700
   },
-  "strategy_by_season": {
+  "totals_by_season": {
     "2024": {
+      "Model + trading strategy": 30158,
       "Model + original strategy": 27676,
-      "Model + improved strategy": 30158
+      "Season averages + same strategy": 26017,
+      "Pre-season squad, no trades": 21838
     },
     "2025": {
+      "Model + trading strategy": 32457,
       "Model + original strategy": 29420,
-      "Model + improved strategy": 32457
+      "Season averages + same strategy": 29501,
+      "Pre-season squad, no trades": 25685
     },
     "2026": {
+      "Model + trading strategy": 30936,
       "Model + original strategy": 28696,
-      "Model + improved strategy": 30936
+      "Season averages + same strategy": 30152,
+      "Pre-season squad, no trades": 25556
     }
   },
   "vs_real_coaches": {

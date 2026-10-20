@@ -360,15 +360,17 @@ def baseline_predictions(df: pd.DataFrame, price_fit: tuple[float, float]) -> di
 
 # ── Neural network ────────────────────────────────────────────────────────────
 
-def _build_network(X_train: np.ndarray, y_mean: float):
+def _build_network(X_train: np.ndarray, y_mean: float, hidden=(64, 32),
+                   dropout=(0.3, 0.2), wide: bool = True, loss="mse"):
     """Wide & Deep regressor (Cheng et al., 2016).
 
     The wide path is a linear model on the standardised features; the deep
     path (two ReLU layers, dropout + L2) learns non-linear corrections and
     starts at zero, so training begins from the linear solution and only
     moves away where the data supports it. On this noisy target a plain MLP
-    under-performed a linear model; this architecture matches it while
-    keeping the capacity to model interactions.
+    (wide=False) under-performed a linear model; this architecture matches it
+    while keeping the capacity to model interactions. The keyword arguments
+    exist so network_report.py can compare variants on a development season.
     """
     from tensorflow import keras
 
@@ -378,23 +380,30 @@ def _build_network(X_train: np.ndarray, y_mean: float):
 
     inputs = keras.Input(shape=(X_train.shape[1],), name="features")
     z = norm(inputs)
-    wide = keras.layers.Dense(1, name="wide",
-                              bias_initializer=keras.initializers.Constant(y_mean))(z)
-    deep = keras.layers.Dense(64, activation="relu", kernel_regularizer=l2)(z)
-    deep = keras.layers.Dropout(0.3)(deep)
-    deep = keras.layers.Dense(32, activation="relu", kernel_regularizer=l2)(deep)
-    deep = keras.layers.Dropout(0.2)(deep)
-    deep = keras.layers.Dense(1, name="deep", kernel_initializer="zeros")(deep)
-    outputs = keras.layers.Add(name="predicted_score")([wide, deep])
+    if wide:     # built first: layer order fixes the seeded initial weights
+        wide_out = keras.layers.Dense(1, name="wide",
+                                      bias_initializer=keras.initializers.Constant(y_mean))(z)
+    deep = z
+    for i, (units, rate) in enumerate(zip(hidden, dropout), start=1):
+        deep = keras.layers.Dense(units, activation="relu", kernel_regularizer=l2,
+                                  name=f"hidden_{i}")(deep)
+        deep = keras.layers.Dropout(rate, name=f"dropout_{i}")(deep)
+    if wide:
+        deep = keras.layers.Dense(1, name="deep", kernel_initializer="zeros")(deep)
+        outputs = keras.layers.Add(name="predicted_score")([wide_out, deep])
+    else:
+        outputs = keras.layers.Dense(1, name="predicted_score",
+                                     bias_initializer=keras.initializers.Constant(y_mean))(deep)
 
-    model = keras.Model(inputs, outputs, name="wide_and_deep")
-    model.compile(optimizer=keras.optimizers.Adam(1e-3), loss="mse", metrics=["mae"])
+    model = keras.Model(inputs, outputs, name="wide_and_deep" if wide else "mlp")
+    model.compile(optimizer=keras.optimizers.Adam(1e-3), loss=loss, metrics=["mae"])
     return model
 
 
-def train_network(pairs: pd.DataFrame, seed: int = SEED):
-    """Fit the network. 15% of *players* are held out for early stopping so
-    the same player never sits in both the fit and the stopping set."""
+def fit_network(pairs: pd.DataFrame, seed: int = SEED, **arch):
+    """Fit the network and return (model, per-epoch training history).
+    15% of *players* are held out for early stopping so the same player
+    never sits in both the fit and the stopping set."""
     from tensorflow import keras
 
     keras.utils.set_random_seed(seed)
@@ -405,8 +414,8 @@ def train_network(pairs: pd.DataFrame, seed: int = SEED):
 
     X = pairs[FEATURES].to_numpy(np.float32)
     y = pairs[TARGET].to_numpy(np.float32)
-    model = _build_network(X[~is_val], float(y[~is_val].mean()))
-    model.fit(
+    model = _build_network(X[~is_val], float(y[~is_val].mean()), **arch)
+    history = model.fit(
         X[~is_val], y[~is_val],
         validation_data=(X[is_val], y[is_val]),
         epochs=200, batch_size=256, verbose=0,
@@ -417,7 +426,11 @@ def train_network(pairs: pd.DataFrame, seed: int = SEED):
                                               patience=5, min_lr=1e-5),
         ],
     )
-    return model
+    return model, history.history
+
+
+def train_network(pairs: pd.DataFrame, seed: int = SEED, **arch):
+    return fit_network(pairs, seed, **arch)[0]
 
 
 def nn_predict(model, df: pd.DataFrame) -> np.ndarray:

@@ -1,0 +1,103 @@
+{
+  "features": 49,
+  "trainable_parameters": 5363,
+  "training_games": 25284,
+  "epochs_run": 47,
+  "best_epoch": 35,
+  "best_val_rmse": 23.07,
+  "test_metrics": {
+    "network": {
+      "mae": 17.012,
+      "rmse": 22.693,
+      "r2": 0.235,
+      "rank_corr": 0.509
+    },
+    "ridge": {
+      "mae": 16.985,
+      "rmse": 22.652,
+      "r2": 0.238,
+      "rank_corr": 0.512
+    },
+    "ensemble": {
+      "mae": 16.972,
+      "rmse": 22.643,
+      "r2": 0.239,
+      "rank_corr": 0.512
+    }
+  },
+  "deep_path": {
+    "mean_abs_correction": 6.82,
+    "share_over_5_points": 0.597,
+    "share_over_10_points": 0.226,
+    "wide_only_mae": 18.355,
+    "corr_network_vs_ridge": 0.984
+  },
+  "architecture_comparison_dev": {
+    "Season average (heuristic)": {
+      "mae": 17.879,
+      "rmse": 23.985,
+      "r2": 0.109,
+      "rank_corr": 0.44,
+      "params": 0.0,
+      "epochs": null,
+      "mae_seed_range": null
+    },
+    "Ridge regression": {
+      "mae": 16.663,
+      "rmse": 22.36,
+      "r2": 0.226,
+      "rank_corr": 0.488,
+      "params": 50.0,
+      "epochs": null,
+      "mae_seed_range": null
+    },
+    "Plain MLP, no wide path": {
+      "mae": 16.787,
+      "rmse": 22.438,
+      "r2": 0.22,
+      "rank_corr": 0.482,
+      "params": 5313.0,
+      "epochs": 54.0,
+      "mae_seed_range": null
+    },
+    "Wide & Deep (production)": {
+      "mae": 16.745,
+      "rmse": 22.428,
+      "r2": 0.221,
+      "rank_corr": 0.482,
+      "params": 5363,
+      "epochs": 71,
+      "mae_seed_range": [
+        16.713,
+        16.752
+      ]
+    },
+    "Wide & Deep + ridge average": {
+      "mae": 16.652,
+      "rmse": 22.337,
+      "r2": 0.227,
+      "rank_corr": 0.488,
+      "params": 5413.0,
+      "epochs": null,
+      "mae_seed_range": null
+    },
+    "Wide & Deep, 3 layers (128-64-32)": {
+      "mae": 16.905,
+      "rmse": 22.535,
+      "r2": 0.213,
+      "rank_corr": 0.475,
+      "params": 16819.0,
+      "epochs": 44.0,
+      "mae_seed_range": null
+    },
+    "Wide & Deep, Huber loss": {
+      "mae": 16.659,
+      "rmse": 22.613,
+      "r2": 0.208,
+      "rank_corr": 0.483,
+      "params": 5363.0,
+      "epochs": 96.0,
+      "mae_seed_range": null
+    }
+  }
+}

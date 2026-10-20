@@ -52,13 +52,15 @@ VALUATIONS = {                       # label -> per-round frame column
     "Price only": "price",
     "Hindsight-perfect": "score",
 }
-IMPROVED_LABEL = "Model + improved strategy"
-ORIGINAL_LABEL = "Model + original strategy"
+IMPROVED_LABEL = "Model + trading strategy"
+ORIGINAL_LABEL = "Model + original strategy"   # first version, kept for the record
+AVERAGES_LABEL = "Season averages + same strategy"
+NO_TRADES_LABEL = "Pre-season squad, no trades"
 SIMULATIONS = [                      # (label, strategy, trading?)
     (IMPROVED_LABEL, IMPROVED, True),
     (ORIGINAL_LABEL, ORIGINAL, True),
-    ("Season averages + improved strategy", replace(IMPROVED, value="season_avg"), True),
-    ("Model squad, no trades", IMPROVED, False),
+    (AVERAGES_LABEL, replace(IMPROVED, value="season_avg"), True),
+    (NO_TRADES_LABEL, IMPROVED, False),
 ]
 
 
@@ -148,23 +150,19 @@ def run_review(year: int, scrape: bool = False) -> dict:
         season_totals.set_index("player_name")["avg_points"])
     final.round(1).to_csv(REVIEW_DIR / "season_simulation_final_squad.csv", index=False)
 
-    main_sims = {k: sims[k].rounds for k in (IMPROVED_LABEL, ORIGINAL_LABEL,
-                                             "Model squad, no trades")}
-    viz.plot_season_simulation(main_sims, IMPROVED_LABEL,
+    shown = (IMPROVED_LABEL, AVERAGES_LABEL, NO_TRADES_LABEL)
+    viz.plot_season_simulation({k: sims[k].rounds for k in shown}, IMPROVED_LABEL,
                                IMAGES_DIR / "season_simulation.png", year,
-                               compare=ORIGINAL_LABEL)
+                               compare=NO_TRADES_LABEL)
     viz.plot_team_value(best.rounds, IMAGES_DIR / "season_team_value.png", year, SALARY_CAP)
-    by_season = {y: {k: dev[y][k].total for k in (ORIGINAL_LABEL, IMPROVED_LABEL)}
-                 for y in DEV_SEASONS}
-    by_season[year] = {k: sims[k].total for k in (ORIGINAL_LABEL, IMPROVED_LABEL)}
-    viz.plot_strategy_improvement(by_season, ORIGINAL_LABEL, IMPROVED_LABEL, year,
-                                  IMAGES_DIR / "strategy_improvement.png")
+    by_season = {y: {k: s.total for k, s in dev[y].items()} for y in DEV_SEASONS}
+    by_season[year] = {k: s.total for k, s in sims.items()}
 
     humans = {}
     bench_path = DATA_INPUTS / f"human_benchmarks_{year}.yaml"
     if bench_path.exists():
         humans = yaml.safe_load(bench_path.read_text(encoding="utf-8"))["season_totals"]
-        viz.plot_human_comparison({k: s.total for k, s in sims.items()}, humans,
+        viz.plot_human_comparison({k: sims[k].total for k in shown}, humans,
                                   IMPROVED_LABEL, IMAGES_DIR / "human_comparison.png", year)
 
     # 2. Predictor comparison: a fresh squad every round.
@@ -226,7 +224,7 @@ def run_review(year: int, scrape: bool = False) -> dict:
             "boosts_used": int(best.trades["boost"].sum()),
             "final_team_value": round(float(rr["squad_value"].iloc[-1] + rr["bank"].iloc[-1])),
         },
-        "strategy_by_season": {str(y): {k: round(v) for k, v in d.items()}
+        "totals_by_season": {str(y): {k: round(v) for k, v in d.items()}
                                for y, d in by_season.items()},
         "vs_real_coaches": {k: round(best.total - v) for k, v in humans.items()},
         "preseason_correlation_with_final_average": preseason_corr,
@@ -249,5 +247,5 @@ if __name__ == "__main__":
                         help="Re-scrape the season before reviewing it")
     args = parser.parse_args()
     summary = run_review(args.year, args.scrape)
-    print(json.dumps({k: summary[k] for k in ("strategy_by_season", "season_simulation",
+    print(json.dumps({k: summary[k] for k in ("totals_by_season", "season_simulation",
                                               "vs_real_coaches")}, indent=2))
