@@ -77,6 +77,8 @@ class Strategy:
     plan_byes: bool = False        # big bye rounds count in full, not discounted
     cow_price: float = 0.0         # cash cows: players up to this price who have played this
     cow_weight: float = 1.0        # season are valued by their whole expected rise (0 = off)
+    cow_trades: bool = False       # also trade players outside the scoring 18 for cash cows,
+    cow_cash_weight: float = 1.0   # counting this share of a cow's rise as future points
     cooldown: int = 3              # rounds before a sold player can be bought back
     candidates: int = 40           # trades scored in full per decision
 
@@ -294,6 +296,8 @@ class Outlook:
     cash_rate: float             # points per $ of cash, over the rest of the season
     counted: list[int]           # scores that count in each round (18, or 13 in a bye)
     rise: pd.Series | None = None  # expected price rise per player ($)
+    cows: pd.Index | None = None   # cash cows available this round
+    cow_rate: float = 0.0          # points per $ of a cow's expected rise
 
 
 def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy) -> Outlook:
@@ -323,24 +327,33 @@ def outlook_for(inputs: SeasonInputs, rnd: int, strat: Strategy) -> Outlook:
         weights = np.where([h in inputs.bye_trades for h in rounds_ahead], 1.0, weights)
     later = strat.discount ** np.arange(1, last - rnd + 1)
     cash_rate = strat.cash_weight * inputs.points_per_dollar * float(later.sum())
+    rise, cows = cash_cows(inputs, rnd, strat)
+    cow_rate = strat.cow_cash_weight * inputs.points_per_dollar * float(later.sum())
     return Outlook(pd.DataFrame(expected), weights, cash_rate,
-                   [inputs.counted(h) for h in rounds_ahead], expected_rise(inputs, rnd, strat))
+                   [inputs.counted(h) for h in rounds_ahead], rise,
+                   cows if strat.cow_trades else None, cow_rate)
 
 
-def expected_rise(inputs: SeasonInputs, rnd: int, strat: Strategy) -> pd.Series:
-    """Expected price rise per player: the 3-game price model, or for a cash
-    cow (cheap, has played this season) the whole climb to the price its
-    predicted score deserves, since Supercoach prices chase scoring."""
+def cash_cows(inputs: SeasonInputs, rnd: int, strat: Strategy) -> tuple[pd.Series, pd.Index]:
+    """Expected price rise per player, and the cash cows. A cow is cheap, has
+    played this season and is named, and still has room to climb to the price
+    its predicted score deserves (Supercoach prices chase scoring); its rise
+    is that whole climb. Everyone else gets the 3-game price model."""
     f = inputs.rounds[rnd].frame
     rise = f["price_change_3"].astype(float)
     if not strat.cow_price:
-        return rise
+        return rise, f.index[:0]
     played = sum(inputs.rounds[r].frame["named"].reindex(f.index, fill_value=False)
                  for r in range(1, rnd + 1)) > 0
     deserved = (f["predicted_points"] - inputs.price_intercept) / inputs.points_per_dollar
     headroom = strat.cow_weight * (deserved - f["price"]).clip(lower=0)
     cow = played & (f["price"] <= strat.cow_price)
-    return rise.where(~cow, np.maximum(rise, headroom))
+    rise = rise.where(~cow, np.maximum(rise, headroom))
+    return rise, f.index[cow & f["named"] & (headroom > 0)]
+
+
+def expected_rise(inputs: SeasonInputs, rnd: int, strat: Strategy) -> pd.Series:
+    return cash_cows(inputs, rnd, strat)[0]
 
 
 def squad_value(squad: list[str], view: Outlook, eligible: dict) -> float:
@@ -375,6 +388,43 @@ def candidate_trades(squad: list[str], bank: float, f: pd.DataFrame, view: Outlo
     return sorted(options, reverse=True)[:n]
 
 
+def scoring_players(squad: list[str], view: Outlook, eligible: dict, rounds: int = 2) -> set:
+    """Players in the expected scoring side in any of the next `rounds` rounds."""
+    chosen = set()
+    for j, col in enumerate(view.expected.columns[:rounds]):
+        values = view.expected.loc[squad, col].to_numpy()
+        open_slots, filled = dict(LINEUP_SLOTS), 0
+        for i in np.argsort(-values):
+            if values[i] <= 0 or filled == view.counted[j]:
+                break
+            for pos in eligible[squad[i]] + ["FLEX"]:
+                if open_slots.get(pos, 0) > 0:
+                    open_slots[pos] -= 1
+                    chosen.add(squad[i])
+                    filled += 1
+                    break
+    return chosen
+
+
+def cow_trades(squad, bank, f, view, eligible, banned_in, locked_out, base, n=10):
+    """Trades of a player outside the expected scoring side for a cash cow:
+    little lost on the field, and the cow's rise is counted at cow_rate."""
+    bench = [p for p in squad if p not in scoring_players(squad, view, eligible)
+             and p not in locked_out]
+    cows = view.rise[view.cows.difference(squad).difference(list(banned_in))].nlargest(n)
+    out = []
+    for o in bench:
+        o_pos, o_price = set(eligible[o]), f.at[o, "price"]
+        for inn, rise in cows.items():
+            if f.at[inn, "price"] > bank + o_price or not o_pos & set(eligible[inn]):
+                continue
+            new = [inn if p == o else p for p in squad]
+            gain = (squad_value(new, view, eligible) - base + view.cow_rate * rise
+                    + view.cash_rate * (o_price - f.at[inn, "price"] - view.rise[o]))
+            out.append((gain, o, inn))
+    return out
+
+
 def best_trade(squad, bank, f, view, eligible, strat, banned_in, locked_out):
     """Highest-value legal trade as (gain, out, in), or None."""
     shortlist = candidate_trades(squad, bank, f, view, eligible, banned_in, locked_out,
@@ -388,6 +438,8 @@ def best_trade(squad, bank, f, view, eligible, strat, banned_in, locked_out):
             cash = view.cash_rate * (f.at[out, "price"] - f.at[inn, "price"]
                                      + rise[inn] - rise[out])
             scored.append((squad_value(new, view, eligible) - base + cash, out, inn))
+        if view.cows is not None and len(view.cows):
+            scored += cow_trades(squad, bank, f, view, eligible, banned_in, locked_out, base)
         shortlist = sorted(scored, reverse=True)
     for gain, out, inn in shortlist:
         new = [inn if p == out else p for p in squad]

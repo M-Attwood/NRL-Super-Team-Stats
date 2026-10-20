@@ -7,8 +7,8 @@ import pandas as pd
 import pytest
 
 from season_sim import (IMPROVED, ORIGINAL, RoundData, SeasonInputs, best_lineup,
-                        expected_rise, greedy_lineup_value, outlook_for, price_table,
-                        round_score, spendable_trades)
+                        Outlook, expected_rise, greedy_lineup_value, outlook_for,
+                        price_table, round_score, scoring_players, spendable_trades)
 
 
 def test_lineup_respects_active_quotas():
@@ -132,3 +132,14 @@ def test_cash_cows_are_valued_by_their_whole_expected_rise():
     assert on["cow"] == 350_000             # deserves $600K (60 pts / 1e-4), costs $250K
     assert on["unplayed"] == 40_000         # no games yet: no cow bonus
     assert on["premium"] == 5_000           # over the price cap
+
+
+def test_scoring_players_are_the_expected_side_this_round_or_next():
+    # Seven centres/wingers: 4 CTW slots + FLEX = 5 score each round.
+    squad = [f"c{i}" for i in range(7)]
+    expected = pd.DataFrame({1: [70, 60, 50, 40, 30, 20, 10],
+                             2: [70, 60, 50, 40, 10, 20, 80]}, index=squad, dtype=float)
+    view = Outlook(expected, np.ones(2), 0.0, [18, 18])
+    eligible = {p: ["CTW"] for p in squad}
+    # Round 1 fields c0-c4; round 2 swaps c4 for c6. c5 never scores.
+    assert scoring_players(squad, view, eligible) == {"c0", "c1", "c2", "c3", "c4", "c6"}

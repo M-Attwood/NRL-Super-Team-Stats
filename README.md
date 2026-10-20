@@ -26,7 +26,7 @@ I ran it live during the 2026 season. This repository is the final version: the 
 | **Honest testing** | Every strategy setting was tuned on the 2024 and 2025 seasons only; 2026 is held out as the test season. The improved strategy wins in all three seasons |
 | **Points predictor** | Trained on 2022–2025, then predicted all **6,407 games of 2026** before each was played. Average error was **16.97 pts per game**, vs 18.08 for the season-average heuristic, and R² rose from 0.15 to 0.24 |
 | **Supporting models** | Availability (will the player be named, State of Origin included?) AUC **0.90**; a 3-game price-change forecast |
-| **Engineering** | Leak-proof features, Wide & Deep network, gradient-boosted trees, CBC integer programs, 60 unit tests, GitHub Actions CI |
+| **Engineering** | Leak-proof features, Wide & Deep network, gradient-boosted trees, CBC integer programs, 61 unit tests, GitHub Actions CI |
 
 ## How it works
 
@@ -122,7 +122,7 @@ The availability model is accurate (AUC 0.90), and under the corrected rules it 
 
 The bye fixes do lift the bye rounds, by up to 460 points, but with 46 trades a season every extra bye-round trade is one fewer for the other 24 rounds. The Origin squads ([`origin_squads.yaml`](data/inputs/origin_squads.yaml), 2020–2026) made the availability predictions sharper: Origin-week log-loss improved from 0.468 to 0.458 in 2024 and from 0.453 to 0.450 in 2025. They still lowered season totals.
 
-**Cash cows, also tested and switched off** (`cow_price`). Top coaches buy cheap players who win a starting role, ride their price rise, then sell them near the peak to fund premiums. I tried valuing a cheap player who has started playing by his whole expected price climb, up to the price his predicted score deserves. The signal works: after two games it flags the real breakout players. At the strategy's usual value of cash, though, it rarely spends a trade on them. The best of four settings gained 19 points a season and won 3 of 12 replays. Valuing cash more makes it buy 15 to 32 cheap players a season and grow team value to about $16M. But it then scores 4,800 to 11,600 fewer points and loses all 12 replays, because it banks value instead of turning it into points. Doing this properly needs a plan for when to cash in, which this greedy trade-by-trade strategy doesn't have.
+**Cash cows, also tested and switched off** (`cow_price`). Top coaches buy cheap players who win a starting role, ride their price rise, then sell them near the peak to fund premiums. I tried valuing a cheap player who has started playing by his whole expected price climb, up to the price his predicted score deserves. The signal works: after two games it flags the real breakout players. At the strategy's usual value of cash, though, it rarely spends a trade on them. The best of four settings gained 19 points a season and won 3 of 12 replays. Valuing cash more makes it buy 15 to 32 cheap players a season and grow team value to about $16M. But it then scores 4,800 to 11,600 fewer points and loses all 12 replays, because it banks value instead of turning it into points. A second version (`cow_trades`) only sold players outside the expected scoring side to make room for cows, with the cows' rise valued separately so starters were never sold for cash. The bonus also fell away as a cow reached his deserved price, so selling him to upgrade won on points. It bought 8 to 19 cheap players a season and sold 5 to 11 of them, but lost in every setting: 460 to 2,970 points a season, at best winning 5 of 12 replays. The cows it picked rose about $78K over four rounds against the $166K it expected, about half were never cashed in, and team value at round 12 ended lower, not higher. Real cash-cow play needs a planner that maps out buy, hold and sell over several rounds. This strategy chooses one trade at a time.
 
 The team-value chart shows the strategy buys premiums: 15 of its 46 trades bought a $650K+ player. Trades are spread evenly to the final round.
 
@@ -204,7 +204,7 @@ pip install -r requirements.txt
 python season_review.py     # the final run: benchmarks, 2024-26 season replays, all charts, retrains the model
 python main.py --round 10   # replay any round: predictions + optimal squad (+ --plan for byes)
 python trade_advisor.py --round 9 --no-scrape   # trade advice for the squad in data/inputs/round_9.yaml
-python -m pytest -q         # 60 tests, no TensorFlow needed
+python -m pytest -q         # 61 tests, no TensorFlow needed
 ```
 
 ## Repository layout
@@ -228,7 +228,7 @@ python -m pytest -q         # 60 tests, no TensorFlow needed
 │   ├── season_review/  # simulation logs, predictions, benchmarks, summary.json
 │   └── live_2026/      # what the system produced live during the 2026 season
 ├── docs/images/        # figures in this README
-└── tests/              # 60 pytest tests (leakage, simulator, availability, optimizer, trades)
+└── tests/              # 61 pytest tests (leakage, simulator, availability, optimizer, trades)
 ```
 
 During the season, a scheduled GitHub Actions workflow ran the pipeline every Wednesday and published the squad and trade advice. It has been retired now the season is over, and CI runs the test suite on every push instead.
